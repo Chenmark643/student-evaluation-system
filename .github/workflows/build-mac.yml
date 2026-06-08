@@ -3,6 +3,7 @@ name: Build macOS DMG
 on:
   push:
     branches: [main, master]
+    tags: ['v*']        # 推送 tag 时触发，自动创建 Release
   workflow_dispatch:   # 允许手动触发
     inputs:
       version:
