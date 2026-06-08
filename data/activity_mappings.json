@@ -1,0 +1,62 @@
+{
+  "英语四级": {
+    "category": "A类",
+    "default_grade": "国家级",
+    "default_score": 5,
+    "last_used": ""
+  },
+  "英语六级": {
+    "category": "A类",
+    "default_grade": "国家级",
+    "default_score": 8,
+    "last_used": ""
+  },
+  "计算机二级": {
+    "category": "A类",
+    "default_grade": "国家级",
+    "default_score": 5,
+    "last_used": ""
+  },
+  "志愿服务": {
+    "category": "志愿类",
+    "default_grade": "时长",
+    "default_score": 2,
+    "last_used": ""
+  },
+  "学生会工作": {
+    "category": "组织测评",
+    "default_grade": "良好",
+    "default_score": 5,
+    "last_used": ""
+  },
+  "省级竞赛获奖": {
+    "category": "B类",
+    "default_grade": "省级",
+    "default_score": 10,
+    "last_used": ""
+  },
+  "校级比赛": {
+    "category": "C类",
+    "default_grade": "校级",
+    "default_score": 3,
+    "last_used": ""
+  },
+  "文艺演出": {
+    "category": "文艺活动类",
+    "default_grade": "校级",
+    "default_score": 3,
+    "last_used": ""
+  },
+  "运动会": {
+    "category": "体育类",
+    "default_grade": "校级",
+    "default_score": 3,
+    "last_used": ""
+  },
+  "学术论文发表": {
+    "category": "学术类",
+    "default_grade": "省级",
+    "default_score": 10,
+    "last_used": ""
+  }
+}

@@ -1,0 +1,112 @@
+/* ============================================================
+   Animations — V7.0 Enhanced
+   Polished transitions, micro-interactions, emotional feedback
+   ============================================================ */
+
+/* Core transitions */
+#module-container {
+    transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.module-section {
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* Toast — slide in from right */
+@keyframes toastSlideIn {
+    from { opacity: 0; transform: translateX(120%); }
+    to { opacity: 1; transform: translateX(0); }
+}
+@keyframes toastSlideOut {
+    from { opacity: 1; transform: translateX(0); }
+    to { opacity: 0; transform: translateX(120%); }
+}
+
+/* Modal — scale + fade */
+@keyframes modalSlideIn {
+    from { opacity: 0; transform: translateY(-16px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Fade + slide up (cards, sections) */
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Floating animation (logo, decorative) */
+@keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+}
+
+/* Glow pulse — primary buttons */
+@keyframes glowPulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(108, 92, 231, 0.3); }
+    50% { box-shadow: 0 0 36px rgba(108, 92, 231, 0.55); }
+}
+.btn-primary.processing { animation: glowPulse 2s infinite; }
+
+/* Shimmer — skeleton loading */
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* Pulse — loading indicators */
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+/* Celebrate — success feedback */
+@keyframes celebrate {
+    0% { transform: scale(0.5); opacity: 0; }
+    50% { transform: scale(1.2); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+}
+.celebrate {
+    animation: celebrate 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Splash loader */
+@keyframes splashLoad {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(350%); }
+}
+
+/* Background canvas */
+#bg-canvas { opacity: 0.35; transition: opacity 0.5s ease; }
+
+/* Tab content crossfade */
+#counselor-tab-content {
+    animation: fadeSlideIn 0.25s ease;
+}
+
+/* Card entrance stagger */
+.counselor-cards .counselor-card {
+    animation: fadeSlideIn 0.4s ease both;
+}
+.counselor-cards .counselor-card:nth-child(1) { animation-delay: 0.05s; }
+.counselor-cards .counselor-card:nth-child(2) { animation-delay: 0.1s; }
+.counselor-cards .counselor-card:nth-child(3) { animation-delay: 0.15s; }
+.counselor-cards .counselor-card:nth-child(4) { animation-delay: 0.2s; }
+.counselor-cards .counselor-card:nth-child(5) { animation-delay: 0.25s; }
+.counselor-cards .counselor-card:nth-child(6) { animation-delay: 0.3s; }
+
+/* Module card hover effect */
+.module-card {
+    transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1),
+                border-color 0.3s ease,
+                box-shadow 0.3s ease;
+}
+.module-card:hover {
+    transform: translateY(-8px);
+}
+
+/* Course analysis charts */
+#chart-score-dist,
+#chart-comp-dist,
+#chart-dist {
+    animation: fadeSlideIn 0.5s ease;
+}

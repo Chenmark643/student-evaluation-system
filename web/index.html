@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>学生综合测评系统 — 顿河学院团委秘书处</title>
+    <link rel="stylesheet" href="css/theme.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/animations.css">
+    <script src="/eel.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Login Page -->
+    <div id="login-page" style="display:none;">
+        <div class="login-container">
+            <div class="login-card">
+                <div class="login-logo">
+                    <img src="college-logo.png" alt="Logo" style="width:64px;height:64px;object-fit:contain;"
+                         onerror="this.style.display='none'">
+                </div>
+                <h2 class="login-title">学生综合测评系统</h2>
+                <p class="login-sub">顿河学院团委秘书处</p>
+                <div class="login-form">
+                    <div class="form-group">
+                        <label>用户名</label>
+                        <input id="login-username" class="input" style="width:100%;" placeholder="请输入用户名">
+                    </div>
+                    <div class="form-group" style="margin-top:12px;">
+                        <label>密码</label>
+                        <input id="login-password" class="input" type="password" style="width:100%;" placeholder="请输入密码">
+                    </div>
+                    <div class="form-group" style="margin-top:12px;">
+                        <label>角色</label>
+                        <select id="login-role" class="select-input" style="width:100%;">
+                            <option value="secretary">秘书处</option>
+                            <option value="counselor">辅导员</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-primary" style="width:100%;margin-top:20px;" onclick="doLogin()">登 录</button>
+                    <p id="login-error" style="font-size:11px;color:var(--color-error);margin-top:8px;text-align:center;display:none;"></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Splash Screen -->
+    <div id="splash-screen">
+        <div class="splash-content">
+            <div class="splash-logo">
+                <svg viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                    <path d="M6 12v5c0 1.1 2.7 2 6 2s6-.9 6-2v-5"/>
+                </svg>
+            </div>
+            <h1 class="splash-title">学生综合测评系统</h1>
+            <div class="splash-loader"><div class="splash-loader-bar"></div></div>
+            <p class="splash-status">正在加载...</p>
+            <p class="splash-author">陈雨昂</p>
+        </div>
+    </div>
+
+    <!-- Counselor Dashboard V8.0 -->
+    <div id="counselor-page" style="display:none;">
+        <div class="counselor-bg"></div>
+        <div class="counselor-container">
+            <div class="counselor-header">
+                <div class="counselor-header-top">
+                    <div class="counselor-header-left">
+                        <img src="college-logo.png" alt="Logo" style="width:32px;height:32px;object-fit:contain;" onerror="this.style.display='none'">
+                        <div><h2>辅导员工作台</h2></div>
+                    </div>
+                    <div class="counselor-header-right" style="gap:12px;">
+                        <span id="counselor-semester-indicator" style="font-size:9px;color:var(--accent-secondary);display:none;"></span>
+                    </div>
+                </div>
+                <div class="counselor-header-bottom">
+                    <div style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text-muted);">
+                        <span>🔍 筛选:</span>
+                        <select id="counselor-grade-sel" class="select-input" style="width:72px;font-size:10px;padding:4px 8px;" onchange="cApplyFilter()">
+                            <option value="">全部年级</option></select>
+                        <select id="counselor-major-sel" class="select-input" style="width:80px;font-size:10px;padding:4px 8px;" onchange="cOnMajorChange()">
+                            <option value="">全部专业</option></select>
+                        <select id="counselor-class-sel" class="select-input" style="width:90px;font-size:10px;padding:4px 8px;" onchange="cApplyFilter()">
+                            <option value="">全部班级</option></select>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:12px;">
+                        <span style="font-size:11px;color:var(--text-muted);" id="counselor-user-label"></span>
+                        <button class="btn btn-ghost btn-sm" style="color:var(--color-error);font-size:10px;padding:4px 8px;" onclick="doLogout()">退出</button>
+                    </div>
+                </div>
+            </div>
+            <div class="counselor-body">
+                <div class="counselor-sidebar" id="counselor-sidebar"></div>
+                <div class="counselor-main" id="counselor-main"></div>
+            </div>
+        </div>
+    </div>
+        </div>
+    </div>
+
+    <!-- Welcome Page V6.0 -->
+    <div id="welcome-page">
+        <div class="welcome-bg"></div>
+        <div class="welcome-container">
+            <div class="welcome-logo-area">
+                <img id="college-logo" src="" alt="学院Logo" class="college-logo-img" onerror="this.style.display='none'">
+            </div>
+            <div class="welcome-greeting" id="welcome-greeting">
+                <h1 class="greeting-main"></h1>
+                <p class="greeting-sub"></p>
+                <p class="greeting-eng"></p>
+            </div>
+            <div class="welcome-stats" id="welcome-stats" style="display:none;">
+                <div class="welcome-stat-item"><span class="welcome-stat-num" id="ws-total">—</span><span class="welcome-stat-lbl">上次处理</span></div>
+                <div class="welcome-stat-item"><span class="welcome-stat-num" id="ws-modules">—</span><span class="welcome-stat-lbl">使用模块</span></div>
+                <div class="welcome-stat-item"><span class="welcome-stat-num" id="ws-last">—</span><span class="welcome-stat-lbl">最近文件</span></div>
+            </div>
+            <div class="welcome-quote" id="welcome-quote">
+                <p class="quote-text"></p>
+                <p class="quote-emoji"></p>
+            </div>
+            <button class="btn btn-primary welcome-start-btn" onclick="startWorking()">开始工作 · Начать работу · Start</button>
+            <div class="welcome-hints" style="margin-top:24px;font-size:10px;color:var(--text-muted);opacity:0.5;">
+                💡 Ctrl+1~4 快速切换模块 · Ctrl+K 快捷键 · 拖拽文件到窗口快速导入
+            </div>
+        </div>
+    </div>
+
+    <!-- Counselor Welcome Page V7.0 -->
+    <div id="counselor-welcome-page" style="display:none;">
+        <div class="welcome-bg"></div>
+        <div class="welcome-container">
+            <div class="welcome-logo-area">
+                <img src="college-logo.png" alt="学院Logo" class="college-logo-img" onerror="this.style.display='none'">
+            </div>
+            <div class="welcome-greeting" id="counselor-welcome-greeting">
+                <h1 class="greeting-main"></h1>
+                <p class="greeting-sub"></p>
+                <p class="greeting-eng"></p>
+            </div>
+            <div class="welcome-quote" id="counselor-welcome-quote">
+                <p class="quote-text"></p>
+                <p class="quote-emoji"></p>
+            </div>
+            <button class="btn btn-primary welcome-start-btn" onclick="startCounselorWork()">进入工作台 · Войти · Enter</button>
+            <div style="margin-top:16px;">
+                <button class="btn btn-ghost btn-sm" onclick="doLogout()">切换账号</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Module Selection -->
+    <div id="module-select-page" style="display:none;">
+        <div class="module-select-container">
+            <h2 class="module-select-title">选择功能模块</h2>
+            <p class="module-select-sub">Выберите модуль · Select Module</p>
+            <div class="module-cards">
+                <div class="module-card card-gpa" onclick="enterModule('gpa')">
+                    <div class="module-card-icon">📊</div>
+                    <h3>学分绩点计算</h3>
+                    <p>Расчет GPA · GPA Calculation</p>
+                    <div class="module-card-badge">成绩导入 → 绩点输出</div>
+                </div>
+                <div class="module-card card-moral" onclick="enterModule('moral')">
+                    <div class="module-card-icon">📋</div>
+                    <h3>德育分计算</h3>
+                    <p>Моральное воспитание · Moral</p>
+                    <div class="module-card-badge">多源数据 → 综合评分</div>
+                </div>
+                <div class="module-card card-quality" onclick="enterModule('quality')">
+                    <div class="module-card-icon">⭐</div>
+                    <h3>素质拓展分计算</h3>
+                    <p>Развитие качеств · Quality</p>
+                    <div class="module-card-badge">加分录入 → 上限管控</div>
+                </div>
+                <div class="module-card card-comp" onclick="enterModule('comprehensive')">
+                    <div class="module-card-icon">📈</div>
+                    <h3>综合测评计算</h3>
+                    <p>Комплексная оценка · Comprehensive</p>
+                    <div class="module-card-badge">三合一 → 排名输出</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Background particles -->
+    <canvas id="bg-canvas"></canvas>
+
+    <!-- App shell (hidden until module entered) -->
+    <div id="app" style="display:none;">
+        <nav id="sidebar">
+            <div class="sidebar-logo" title="顿河学院团委秘书处">
+                <img src="college-logo.png" alt="Logo" class="sidebar-logo-img"
+                     onerror="this.style.display='none';this.parentElement.querySelector('svg').style.display='';">
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
+                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+                    <path d="M6 12v5c0 1.1 2.7 2 6 2s6-.9 6-2v-5"/>
+                </svg>
+            </div>
+            <div class="sidebar-nav">
+                <button class="nav-btn active" data-module="gpa" title="学分绩点计算">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 4-6"/>
+                    </svg><span>绩点</span>
+                </button>
+                <button class="nav-btn" data-module="moral" title="德育分计算">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20.8 4.6a2 2 0 0 0-3.4-1.4l-5.4 5.4-5.4-5.4a2 2 0 0 0-3.4 1.4v14.8a2 2 0 0 0 2 2h13.6a2 2 0 0 0 2-2V4.6z"/>
+                    </svg><span>德育</span>
+                </button>
+                <button class="nav-btn" data-module="quality" title="素质拓展分计算">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 15.1 8.3 22 9.3 17 14.1 18.2 21 12 17.8 5.8 21 7 14.1 2 9.3 8.9 8.3"/>
+                    </svg><span>素拓</span>
+                </button>
+                <button class="nav-btn" data-module="comprehensive" title="综合测评计算">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+                        <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+                    </svg><span>综测</span>
+                </button>
+            </div>
+            <div class="sidebar-footer">
+                <button class="nav-btn" data-module="settings" title="设置">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/><path d="M12 1v2m0 18v2M4.2 4.2l1.4 1.4m12.8 12.8 1.4 1.4M1 12h2m18 0h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/>
+                    </svg>
+                </button>
+                <button class="nav-btn" onclick="backToModuleSelect()" title="返回首页" style="margin-top:4px;">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/>
+                    </svg>
+                </button>
+                <div class="sidebar-branding" title="顿河学院团委秘书处">
+                    <span class="sidebar-branding-text">顿河学院</span>
+                    <span class="sidebar-branding-text">团委秘书处</span>
+                </div>
+            </div>
+        </nav>
+
+        <main id="content">
+            <header id="header">
+                <h1 id="module-title">学分绩点计算</h1>
+                <div class="header-actions">
+                    <span id="app-version" class="version-tag">v2.3</span>
+                </div>
+            </header>
+            <div id="module-container"></div>
+        </main>
+    </div>
+
+    <!-- Toast / Modal / Output dialogs -->
+    <div id="toast-container"></div>
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal-card">
+            <div class="modal-header"><h3 id="modal-title"></h3><button class="modal-close" onclick="closeModal()">&times;</button></div>
+            <div id="modal-body"></div><div class="modal-footer" id="modal-footer"></div>
+        </div>
+    </div>
+    <div id="update-overlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:500px;">
+            <div class="modal-header"><h3>🔄 软件更新</h3><button class="modal-close" onclick="document.getElementById('update-overlay').classList.add('hidden')">&times;</button></div>
+            <div id="update-body" style="padding:16px;"></div><div class="modal-footer" id="update-footer"></div>
+        </div>
+    </div>
+    <div id="onboarding-overlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:600px;">
+            <div class="modal-header"><h3>👋 欢迎使用</h3><button class="modal-close" onclick="closeOnboarding()">&times;</button></div>
+            <div id="onboarding-body" style="padding:16px;max-height:55vh;overflow-y:auto;line-height:1.8;font-size:13px;color:var(--text-secondary);"></div>
+            <div class="modal-footer">
+                <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" id="onboarding-skip" onchange="skipFutureOnboarding()"> 下次不再显示</label>
+                <button class="btn btn-primary" onclick="closeOnboarding()">开始使用</button>
+            </div>
+        </div>
+    </div>
+    <div id="output-dialog-overlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:450px;">
+            <div class="modal-header"><h3 id="output-dialog-title"></h3><button class="modal-close" onclick="document.getElementById('output-dialog-overlay').classList.add('hidden')">&times;</button></div>
+            <div id="output-dialog-body" style="padding:16px;text-align:center;"></div>
+            <div class="modal-footer" id="output-dialog-footer" style="justify-content:center;gap:12px;"></div>
+        </div>
+    </div>
+
+    <!-- Persistent quote / branding widgets -->
+    <div id="corner-logo" title="顿河学院团委秘书处" style="display:none;">
+        <img src="college-logo.png" alt="Logo" class="corner-logo-img"
+             onerror="this.parentElement.style.display='none';">
+    </div>
+    <div id="corner-quote" style="display:none;">
+        <span class="corner-quote-text"></span>
+    </div>
+
+    <!-- Result Preview (Editable Table) -->
+    <div id="preview-overlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:95vw;max-height:90vh;width:1200px;">
+            <div class="modal-header">
+                <h3>📋 结果预览与编辑</h3>
+                <div style="display:flex;gap:8px;">
+                    <button class="btn btn-ghost btn-sm" onclick="previewUndo()" title="撤销 Ctrl+Z">↩ 撤销</button>
+                    <button class="btn btn-ghost btn-sm" onclick="previewAddRow()">+ 添加行</button>
+                    <button class="btn btn-teal btn-sm" onclick="previewExport()">💾 导出</button>
+                    <button class="modal-close" onclick="document.getElementById('preview-overlay').classList.add('hidden')">&times;</button>
+                </div>
+            </div>
+            <div id="preview-body" style="padding:8px;max-height:65vh;overflow:auto;"></div>
+            <div id="preview-stats" style="padding:8px 16px;border-top:var(--border-thin);font-size:11px;color:var(--text-secondary);"></div>
+        </div>
+    </div>
+
+    <!-- Stats Dashboard -->
+    <div id="stats-overlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:95vw;max-height:90vh;width:1100px;">
+            <div class="modal-header">
+                <h3>📊 数据分析面板</h3>
+                <button class="modal-close" onclick="document.getElementById('stats-overlay').classList.add('hidden')">&times;</button>
+            </div>
+            <div id="stats-body" style="padding:16px;max-height:65vh;overflow-y:auto;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                    <div><canvas id="chart-bar"></canvas></div>
+                    <div><canvas id="chart-pie"></canvas></div>
+                </div>
+                <div style="margin-top:16px;"><canvas id="chart-line"></canvas></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Comparison Modal -->
+    <div id="compare-overlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:95vw;max-height:90vh;width:1200px;">
+            <div class="modal-header">
+                <h3>📈 学期对比</h3>
+                <button class="modal-close" onclick="document.getElementById('compare-overlay').classList.add('hidden')">&times;</button>
+            </div>
+            <div id="compare-body" style="padding:16px;max-height:65vh;overflow:auto;"></div>
+        </div>
+    </div>
+
+    <!-- V9.0: Material Viewer Modal -->
+    <div id="material-viewer-overlay" class="modal-overlay hidden">
+        <div class="modal-card material-viewer-card">
+            <div class="modal-header">
+                <h3 id="material-viewer-title">查看材料</h3>
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <span id="material-viewer-status" style="font-size:11px;"></span>
+                    <button class="modal-close" onclick="closeMaterialViewer()">&times;</button>
+                </div>
+            </div>
+            <div class="material-viewer-body">
+                <div class="material-viewer-left">
+                    <div class="material-file-list" id="material-file-list">
+                        <p style="color:var(--text-muted);text-align:center;padding:12px;font-size:11px;">加载中...</p>
+                    </div>
+                    <div class="material-file-preview" id="material-file-preview">
+                        <p style="color:var(--text-muted);text-align:center;padding:40px;">选择左侧文件查看</p>
+                    </div>
+                </div>
+                <div class="material-viewer-right">
+                    <h4 style="font-size:12px;margin-bottom:8px;margin-top:0;">加分判定（手动）</h4>
+                    <div id="material-scoring-form"></div>
+                    <div id="material-scoring-list" style="margin-top:12px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/components/toast.js"></script>
+    <script src="js/components/modal.js"></script>
+    <script src="js/components/progress-bar.js"></script>
+    <script src="js/components/file-picker.js"></script>
+    <script src="js/components/data-table.js"></script>
+    <script src="js/components/ai-panel.js"></script>
+    <script src="js/modules/counselor.js"></script>
+    <script src="js/modules/gpa.js"></script>
+    <script src="js/modules/moral.js"></script>
+    <script src="js/modules/quality.js"></script>
+    <script src="js/modules/comprehensive.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

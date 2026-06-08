@@ -1,0 +1,45 @@
+# Build artifacts
+build/
+dist/
+*.spec.bak
+*.pyc
+__pycache__/
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# App data (user-generated / sensitive)
+data/*.xlsx
+data/*.xls
+data/*.json
+!data/activity_mappings.json
+data/.deepseek_key
+data/users.db
+data/custom_thresholds.json
+.gstack/
+
+# Large binaries
+*.exe
+*.dmg
+*.app
+
+# Logs
+*.log
+
+# Python
+*.pyo
+*.pyd
+.Python
