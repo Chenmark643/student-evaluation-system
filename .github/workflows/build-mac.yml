@@ -67,9 +67,9 @@ jobs:
           cp -R "dist/${APP_NAME}.app" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
 
-          # 生成 DMG 背景图
+          # 生成 DMG 背景图（PIL 可用时美化，不可用时跳过）
           python3 - "$STAGING" << 'PYEOF'
-          import sys, os
+          import sys, os, traceback
           staging = sys.argv[1]
           bg_path = os.path.join(staging, 'dmg_bg.png')
           try:
@@ -80,36 +80,60 @@ jobs:
               for i in range(120):
                   c = 240 - i // 3
                   draw.line([(0, i), (w, i)], fill=(c, c, 252))
-              font = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 22, index=2)
-              font_sm = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 13, index=2)
-              draw.text((160, 280), "←  拖到 Applications 文件夹即可安装",
+              # 尝试多个字体路径，兼容不同 macOS 版本
+              font = None
+              font_sm = None
+              for font_path in [
+                  '/System/Library/Fonts/PingFang.ttc',
+                  '/System/Library/Fonts/STHeiti Light.ttc',
+                  '/System/Library/Fonts/STHeiti Medium.ttc',
+                  '/Library/Fonts/Arial Unicode.ttf',
+              ]:
+                  try:
+                      font = ImageFont.truetype(font_path, 22, index=0)
+                      font_sm = ImageFont.truetype(font_path, 13, index=0)
+                      break
+                  except Exception:
+                      continue
+              if font is None:
+                  font = ImageFont.load_default()
+                  font_sm = ImageFont.load_default()
+              draw.text((160, 280), "<-  Drag to Applications to install",
                         fill=(80, 80, 90), font=font)
-              draw.text((270, 230), "顿河学院学生测评管理软件",
+              draw.text((270, 230), "Dunhe Student Evaluation",
                         fill=(60, 60, 72), font=font_sm)
               img.save(bg_path)
-          except ImportError:
+              print("DMG background image created")
+          except Exception as e:
+              # 任何错误都不阻塞构建 — 回退到无背景 DMG
+              print(f"Background image skipped: {e}")
+              traceback.print_exc()
               open(bg_path, 'w').close()
           PYEOF
 
-          # 创建未压缩 DMG
+          # 创建未压缩 DMG（UDRW，用于布局定制）
+          echo "Creating writable DMG..."
           hdiutil create \
-              -volname "${APP_NAME}" \
+              -volname "DunheStudentEval" \
               -srcfolder "$STAGING" \
               -ov -format UDRW \
               "${STAGING}.dmg" \
               -fs HFS+ \
-              -size 600M
+              -size 800M
 
-          # 挂载并设置布局
-          DEV=$(hdiutil attach "${STAGING}.dmg" -nobrowse -noautoopen | grep '/dev/' | head -1 | awk '{print $1}')
+          # 可选：挂载并美化 DMG 布局（失败不影响最终产物）
+          echo "Customizing DMG layout..."
+          DEV=$(hdiutil attach "${STAGING}.dmg" -nobrowse -noautoopen 2>/dev/null | grep '/dev/' | head -1 | awk '{print $1}')
           if [ -n "$DEV" ]; then
-              VOL="/Volumes/${APP_NAME}"
-              mkdir -p "${VOL}/.background"
-              cp "${STAGING}/dmg_bg.png" "${VOL}/.background/"
-
-              osascript << APPLESCRIPT
+              VOL="/Volumes/DunheStudentEval"
+              # 复制背景图（如果存在且非空）
+              if [ -s "${STAGING}/dmg_bg.png" ]; then
+                  mkdir -p "${VOL}/.background" 2>/dev/null || true
+                  cp "${STAGING}/dmg_bg.png" "${VOL}/.background/" 2>/dev/null || true
+                  # 设置背景图
+                  osascript << 'APPLESCRIPT' 2>/dev/null || true
           tell application "Finder"
-              tell disk "${APP_NAME}"
+              tell disk "DunheStudentEval"
                   open
                   set current view of container window to icon view
                   set toolbar visible of container window to false
@@ -119,7 +143,28 @@ jobs:
                   set arrangement of viewOptions to not arranged
                   set icon size of viewOptions to 80
                   set background picture of viewOptions to file ".background:dmg_bg.png"
-                  set position of item "${APP_NAME}.app" to {160, 160}
+                  close
+                  open
+                  update without registering applications
+                  delay 1
+              end tell
+          end tell
+          APPLESCRIPT
+              fi
+
+              # 设置图标位置（不依赖背景图）
+              osascript << 'APPLESCRIPT' 2>/dev/null || true
+          tell application "Finder"
+              tell disk "DunheStudentEval"
+                  open
+                  set current view of container window to icon view
+                  set toolbar visible of container window to false
+                  set statusbar visible of container window to false
+                  set the bounds of container window to {200, 150, 860, 550}
+                  set viewOptions to the icon view options of container window
+                  set arrangement of viewOptions to not arranged
+                  set icon size of viewOptions to 80
+                  set position of item "顿河学院学生测评管理软件.app" to {160, 160}
                   set position of item "Applications" to {420, 160}
                   close
                   open
@@ -129,10 +174,14 @@ jobs:
           end tell
           APPLESCRIPT
               sleep 1
-              hdiutil detach "$DEV" -quiet -force
+              hdiutil detach "$DEV" -quiet -force 2>/dev/null || true
+              echo "DMG layout customized"
+          else
+              echo "DMG layout skipped (could not mount for customization)"
           fi
 
           # 压缩为最终 DMG
+          echo "Converting to compressed DMG..."
           hdiutil convert "${STAGING}.dmg" \
               -format UDZO \
               -imagekey zlib-level=9 \
@@ -140,6 +189,7 @@ jobs:
 
           rm -rf "$STAGING" "${STAGING}.dmg"
           echo "✅ DMG created: dist/${DMG_NAME}"
+          ls -lh "dist/${DMG_NAME}"
 
       - name: 上传 DMG (Artifact)
         uses: actions/upload-artifact@v4

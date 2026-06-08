@@ -147,7 +147,7 @@ create_dmg() {
     # ── Create a simple background image (gradient + hint text) ──────
     # Uses built-in Python to generate a PNG background (no extra tools needed)
     $PYTHON - "$STAGING" << 'PYEOF'
-import sys, os
+import sys, os, traceback
 staging = sys.argv[1]
 bg_path = os.path.join(staging, 'dmg_bg.png')
 
@@ -163,24 +163,36 @@ try:
         c = 240 - i // 3
         draw.line([(0, i), (w, i)], fill=(c, c, 252))
 
-    # Arrow + hint text
-    try:
-        font = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 22, index=2)
-        font_sm = ImageFont.truetype('/System/Library/Fonts/PingFang.ttc', 13, index=2)
-    except Exception:
+    # Try multiple font paths for macOS version compatibility
+    font = None
+    font_sm = None
+    for fp in [
+        '/System/Library/Fonts/PingFang.ttc',
+        '/System/Library/Fonts/STHeiti Light.ttc',
+        '/System/Library/Fonts/STHeiti Medium.ttc',
+        '/Library/Fonts/Arial Unicode.ttf',
+    ]:
+        try:
+            font = ImageFont.truetype(fp, 22, index=0)
+            font_sm = ImageFont.truetype(fp, 13, index=0)
+            break
+        except Exception:
+            continue
+    if font is None:
         font = ImageFont.load_default()
         font_sm = ImageFont.load_default()
 
-    draw.text((160, 280), "←  拖到 Applications 文件夹即可安装",
+    draw.text((160, 280), "<-  Drag to Applications to install",
               fill=(80, 80, 90), font=font)
-    draw.text((270, 230), "顿河学院学生测评管理软件",
+    draw.text((270, 230), "Dunhe Student Evaluation",
               fill=(60, 60, 72), font=font_sm)
     img.save(bg_path)
     print("DMG background created")
-except ImportError:
-    # No PIL — DMG still works, just no custom background
-    open(bg_path, 'w').close()  # placeholder
-    print("Pillow not installed — DMG will have default background")
+except Exception as e:
+    # Any error → skip background (DMG still works)
+    print(f"Background skipped: {e}")
+    traceback.print_exc()
+    open(bg_path, 'w').close()
 PYEOF
 
     # ── Create the DMG ──────────────────────────────────────────────
