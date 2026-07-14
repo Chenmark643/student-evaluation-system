@@ -34,6 +34,22 @@ const QUALITY_DEFAULT_THRESHOLD_NAMES = new Set([
     '比赛志愿服务每学期上限', '学院活动参与每学期上限', '寒暑假社会实践上限',
     '技能培训与证书上限', '学生干部任职取最高', '新生班主任助理取最高',
 ]);
+const QUALITY_FALLBACK_THRESHOLDS = [
+    {name:'比赛志愿服务每学期上限',max:2,categories:['比赛志愿服务类'],mode:'sum'},
+    {name:'学院活动参与每学期上限',max:1,categories:['学院活动参与类'],mode:'sum'},
+    {name:'寒暑假社会实践上限',max:2,categories:['寒暑假实践类'],mode:'sum'},
+    {name:'技能培训与证书上限',max:3,categories:['技能证书类','技能培训'],mode:'sum'},
+    {name:'学生干部任职取最高',max:3,categories:['学生工作类','学生工作','组织测评'],mode:'max_item'},
+    {name:'新生班主任助理取最高',max:2,categories:['班主任助理类'],mode:'max_item'},
+];
+
+async function qualityLoadThresholds() {
+    try {
+        const rows = await eel.get_all_thresholds()();
+        if (Array.isArray(rows) && rows.length) return rows;
+    } catch(e) { console.error('加载素拓上限失败，使用内置规则', e); }
+    return QUALITY_FALLBACK_THRESHOLDS.map(row => ({...row, categories:[...row.categories]}));
+}
 
 // ============================================================
 // Render
@@ -217,10 +233,10 @@ async function renderModuleQuality() {
             const dl = document.getElementById('quality-datalist');
             if (dl) for (const name of Object.keys(mappings)) { const o = document.createElement('option'); o.value = name; dl.appendChild(o); }
         } catch(e) { console.error(e); }
-        try { qualityThresholds = await eel.get_all_thresholds()() || []; } catch(e) { qualityThresholds = [{name:'社会实践类上限',max:3,categories:['社会实践类']},{name:'学生工作类上限',max:3,categories:['学生工作类'],mode:'max_item'},{name:'技能证书类上限',max:3,categories:['技能证书类']}]; }
+        qualityThresholds = await qualityLoadThresholds();
         qualityRenderThresholds();
     } else if (qualityMode === 'import') {
-        try { qualityThresholds = await eel.get_all_thresholds()() || []; } catch(e) { qualityThresholds = [{name:'社会实践类上限',max:3,categories:['社会实践类']},{name:'学生工作类上限',max:3,categories:['学生工作类'],mode:'max_item'},{name:'技能证书类上限',max:3,categories:['技能证书类']}]; }
+        qualityThresholds = await qualityLoadThresholds();
         if (qualityImportBaseDir) { document.getElementById('quality-import-output-dir').value = qualityImportBaseDir; }
         if (Object.keys(qualityRoster).length > 0) {
             const s = document.getElementById('quality-roster-status');
@@ -815,7 +831,7 @@ async function qualityImportShowThresholds() {
 function qualityImportUpdateThreshold(idx, value) { const v = parseFloat(value) || 0; if (idx >= 0 && idx < qualityThresholds.length) qualityThresholds[idx].max = v; }
 async function qualityImportDeleteThreshold(idx) { if (idx<0||idx>=qualityThresholds.length) return; const th = qualityThresholds[idx]; if (QUALITY_DEFAULT_THRESHOLD_NAMES.has(th.name)) { showToast('默认阈值不可删除','warning'); return; } try { qualityThresholds = await eel.remove_custom_threshold_category(th.name)(); showToast('已删除','success'); qualityImportShowThresholds(); } catch(e) { showToast('删除失败: '+e,'error'); } }
 async function qualityImportConfirmAddThreshold() { const name = document.getElementById('mvth-new-name').value.trim(), mode = document.getElementById('mvth-new-mode')?.value||'sum', maxScore = parseFloat(document.getElementById('mvth-new-max').value)||0, cats = [...document.querySelectorAll('.mvth-cat-cb:checked')].map(cb=>cb.value); if(!name){showToast('请输入名称','warning');return;} if(cats.length===0){showToast('请选择适用类别','warning');return;} if(maxScore<=0){showToast('请输入有效上限','warning');return;} try{qualityThresholds=await eel.add_custom_threshold_category(name,maxScore,cats,mode)();showToast(`已添加(${mode==='max_item'?'取最高':'求和封顶'})`,'success');qualityImportShowThresholds();}catch(e){showToast('添加失败: '+e,'error');} }
-function qualityImportRefreshAfterThreshold() { qualityImportRenderThresholdMini(); qualityImportRenderViewerScores(); }
+function qualityImportRefreshAfterThreshold() { QualityMaterialDrawer.setThresholds(qualityThresholds); }
 
 async function qualityImportOnActivityInput() { const a = document.getElementById('mv-activity').value.trim(); if(!a)return; try{const s=await eel.get_activity_suggestions(a)();if(s&&s.category){document.getElementById('mv-cat').value=s.category;qualityImportOnViewerCat();setTimeout(()=>{if(s.default_grade)document.getElementById('mv-grade').value=s.default_grade;if(s.default_score)document.getElementById('mv-score').value=s.default_score;},100);}}catch(e){} }
 
@@ -851,7 +867,7 @@ async function qualityImportRestoreProgress(){
     try{const path=await eel.select_file([['JSON文件','*.json'],['所有文件','*.*']],'选择加分进度JSON文件')();if(!path)return;
     const result=await eel.load_quality_progress_from_file(path)();if(!result.success){showToast('恢复失败: '+result.error,'error');return;}
     let merged=0;for(const[sid,acts]of Object.entries(result.data)){if(!qualityData[sid])qualityData[sid]=[];const existing=new Set(qualityData[sid].map(a=>`${a.activity}|${a.score}`));for(const act of(acts||[])){const key=`${act.activity}|${act.score}`;if(!existing.has(key)){qualityData[sid].push(act);merged++;}}}
-    await _qualityImportAutoSave();if(qualityViewerStudent)qualityImportRenderViewerScores();qualityImportRenderTree();showToast(`✅ 进度已恢复: ${result.student_count} 名学生, ${result.total_items} 条加分 (新增 ${merged} 条)`,'success');}catch(e){showToast('恢复失败: '+e,'error');}
+    await _qualityImportAutoSave();if(qualityViewerStudent){const sid=qualityImportRosterMap[qualityViewerStudent.key]||qualityViewerStudent.id||qualityViewerStudent.key;QualityMaterialDrawer.setStudent(qualityViewerStudent,qualityData[sid]||[]);QualityMaterialDrawer.setThresholds(qualityThresholds);}qualityImportRenderTree();showToast(`✅ 进度已恢复: ${result.student_count} 名学生, ${result.total_items} 条加分 (新增 ${merged} 条)`,'success');}catch(e){showToast('恢复失败: '+e,'error');}
 }
 
 // ============================================================

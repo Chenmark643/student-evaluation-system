@@ -1,4 +1,5 @@
 import unittest
+import re
 from pathlib import Path
 
 
@@ -31,6 +32,40 @@ class QualityMaterialWorkspaceTests(unittest.TestCase):
         for token in ('QualityMaterialDrawer.mount', 'QualityMaterialDrawer.setStudent',
                       'QualityMaterialDrawer.setFiles'):
             self.assertIn(token, js)
+
+    def test_confirm_add_does_not_append_to_shared_activity_array_twice(self):
+        js = self._drawer()
+        match = re.search(r'function confirmAdd\(\).*?(?=\n\s*function renderExisting)', js, re.S)
+        self.assertIsNotNone(match)
+        body = match.group(0)
+        self.assertIn('state.options.onAdd', body)
+        self.assertNotIn('state.activities.push', body)
+
+    def test_all_thresholds_remain_visible_and_manageable(self):
+        js = self._drawer()
+        self.assertIn('quality-threshold-summary', js)
+        self.assertIn('renderThresholdSummary', js)
+        self.assertIn('state.thresholds.map', js)
+        self.assertIn('qualityImportShowThresholds()', js)
+        setter = re.search(r'function setThresholds\(rows\).*?\}', js, re.S)
+        self.assertIsNotNone(setter)
+        self.assertIn('renderThresholdSummary', setter.group(0))
+
+    def test_threshold_editor_refreshes_the_new_drawer_not_legacy_markup(self):
+        js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
+        match = re.search(r'function qualityImportRefreshAfterThreshold\(\).*?(?=\n\s*(?:async )?function)', js, re.S)
+        self.assertIsNotNone(match)
+        body = match.group(0)
+        self.assertIn('QualityMaterialDrawer.setThresholds', body)
+        self.assertNotIn('qualityImportRenderViewerScores', body)
+
+    def test_frontend_fallback_keeps_the_six_current_caps(self):
+        js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
+        self.assertIn('QUALITY_FALLBACK_THRESHOLDS', js)
+        for name in ('比赛志愿服务每学期上限', '学院活动参与每学期上限', '寒暑假社会实践上限',
+                     '技能培训与证书上限', '学生干部任职取最高', '新生班主任助理取最高'):
+            self.assertIn(name, js)
+        self.assertNotIn("name:'社会实践类上限'", js)
 
     @staticmethod
     def _drawer():

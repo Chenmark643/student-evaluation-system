@@ -23,7 +23,7 @@
         state.activities = activities || []; state.selected = null; state.query = ''; render(); restoreDraft(); renderStudentRail();
     }
     function setFiles(files) { state.files = files || []; }
-    function setThresholds(rows) { state.thresholds = rows || []; renderCapPreview(); }
+    function setThresholds(rows) { state.thresholds = rows || []; renderThresholdSummary(); renderCapPreview(); }
     function open() { state.root?.classList.add('open'); }
     function close() { saveDraft(); state.root?.classList.remove('open'); }
     function getDraft() { return readForm(); }
@@ -46,6 +46,7 @@
         state.root.innerHTML = `<div class="quality-drawer-inner">
             <p class="quality-drawer-kicker">SCORING WORKBENCH</p><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;"><h3 class="quality-drawer-title">加分判定</h3><div style="display:flex;gap:4px;"><button class="btn btn-ghost btn-sm" onclick="qualityImportShowThresholds()">查看上限</button><button class="btn btn-ghost btn-sm" onclick="qualityImportCompleteCurrentFromDrawer()">完成并继续</button></div></div>
             <p class="quality-drawer-sub">先选常用规则，再按材料实际情况调整。所有建议均可修改。</p>
+            <section class="quality-threshold-panel"><div class="quality-threshold-head"><b>本学期加分上限</b><button class="btn btn-ghost btn-sm" onclick="qualityImportShowThresholds()">管理上限</button></div><div id="quality-threshold-summary" class="quality-threshold-summary"></div></section>
             <div class="quality-preset-search"><input id="quality-preset-search" class="input" placeholder="搜索比赛、证书、志愿服务…" autocomplete="off"></div>
             <div id="quality-preset-results" class="quality-preset-results"></div>
             <div class="quality-score-grid">
@@ -62,7 +63,7 @@
             <div id="quality-warning-area"></div>
             <div class="quality-drawer-actions"><button class="btn btn-ghost btn-sm" id="qmd-save-template">保存模板</button><button class="btn btn-primary" id="qmd-add">确认加入该学生</button></div>
           </div><div class="quality-drawer-existing" id="material-scoring-list"></div>`;
-        bind(); filterPresets(''); renderCapPreview(); renderExisting();
+        bind(); filterPresets(''); renderThresholdSummary(); renderCapPreview(); renderExisting();
     }
     function categoryOptions() {
         const cats = state.categories.length ? state.categories : [...new Set(state.presets.map(p => p.category))];
@@ -87,6 +88,16 @@
     function value(id) { return document.getElementById(id)?.value || ''; }
     function applyForm(row) { const map={name:'qmd-name',category:'qmd-category',grade:'qmd-grade',baseScore:'qmd-base',count:'qmd-count',contributionFactor:'qmd-contribution'}; Object.entries(map).forEach(([key,id])=>{const el=document.getElementById(id);if(el&&row[key]!=null)el.value=row[key];}); const related=document.getElementById('qmd-related'); if(related)related.checked=!!row.relatedMultiplier; renderCapPreview(); }
     function scorePreview() { const row=readForm(), baseTotal=row.baseScore*row.count, contributed=baseTotal*row.contributionFactor; return { ...row, baseTotal, contributed, final:contributed*(row.relatedMultiplier?2:1) }; }
+    function renderThresholdSummary() {
+        const box=document.getElementById('quality-threshold-summary'); if(!box)return;
+        if(!state.thresholds.length){box.innerHTML='<span class="quality-threshold-empty">尚未加载上限，请点击“管理上限”检查</span>';return;}
+        box.innerHTML=state.thresholds.map(th=>{
+            const scores=state.activities.filter(a=>(th.categories||[]).includes(a.category)).map(a=>Number(a.score)||0);
+            const used=(th.mode||'sum')==='max_item'?(scores.length?Math.max(...scores):0):scores.reduce((sum,n)=>sum+n,0);
+            const capped=Math.min(used,Number(th.max)||0), full=used>=(Number(th.max)||0);
+            return `<span class="quality-threshold-chip ${full?'full':''}" title="${esc((th.categories||[]).join('、'))}"><b>${esc(th.name)}</b><em>${capped.toFixed(1)} / ${Number(th.max).toFixed(1)}</em><small>${(th.mode||'sum')==='max_item'?'取最高':'累计封顶'}</small></span>`;
+        }).join('');
+    }
     function renderCapPreview() {
         const box=document.getElementById('quality-cap-preview'); if(!box)return; const p=scorePreview();
         const threshold=state.thresholds.find(t=>(t.categories||[]).includes(p.category)); const current=state.activities.filter(a=>(threshold?.categories||[]).includes(a.category)).reduce((n,a)=>n+(Number(a.score)||0),0);
@@ -97,8 +108,8 @@
     function duplicateWarning(row) { const n=norm(row.name); return state.activities.some(a => (row.officialPresetId && a.official_preset_id===row.officialPresetId) || (n && norm(a.activity)===n)); }
     function renderWarnings() { const box=document.getElementById('quality-warning-area');if(!box)return;const row=readForm();let html=''; if(duplicateWarning(row))html+='<div class="quality-duplicate-warning">发现该学生已有同名或同规则项目。细则建议同一项目只取最高值；你仍可确认后继续添加。</div>'; const range=state.selected?.score_range;if(range&&(row.baseScore<range[0]||row.baseScore>range[1]))html+=`<div class="quality-range-warning">当前基础分超出细则建议范围 ${range[0]}–${range[1]} 分。不会拦截，请确认材料依据。</div>`;box.innerHTML=html; }
     async function saveAsUserTemplate() { const row=readForm();if(!row.name||!row.category){showToast('请先填写项目名称和类别','warning');return;}try{await eel.save_activity_mapping(row.name,row.category,row.grade,row.baseScore)();showToast('已保存为个人常用模板','success');}catch(e){showToast('模板保存失败: '+e,'error');} }
-    function confirmAdd() { const p=scorePreview();if(!p.name||!p.category||p.final<=0){showToast('请补全项目、类别和有效分数','warning');return;} const duplicate=duplicateWarning(p); if(duplicate&&!confirm('已有相同项目。是否仍然继续添加？'))return; state.options.onAdd?.({ activity:p.name,category:p.category,grade:p.grade,score:Number(p.final.toFixed(4)),base_score:p.baseScore,count:p.count,contribution:p.contributionFactor,related_multiplier:p.relatedMultiplier?2:1,official_preset_id:p.officialPresetId }); clearDraft(); state.selected=null; state.activities.push({activity:p.name,category:p.category,grade:p.grade,score:p.final,official_preset_id:p.officialPresetId}); render(); }
+    function confirmAdd() { const p=scorePreview();if(!p.name||!p.category||p.final<=0){showToast('请补全项目、类别和有效分数','warning');return;} const duplicate=duplicateWarning(p); if(duplicate&&!confirm('已有相同项目。是否仍然继续添加？'))return; state.options.onAdd?.({ activity:p.name,category:p.category,grade:p.grade,score:Number(p.final.toFixed(4)),base_score:p.baseScore,count:p.count,contribution:p.contributionFactor,related_multiplier:p.relatedMultiplier?2:1,official_preset_id:p.officialPresetId }); clearDraft(); state.selected=null; render(); }
     function renderExisting() { const box=document.getElementById('material-scoring-list');if(!box)return; if(!state.activities.length){box.innerHTML='<p style="font-size:10px;color:var(--text-muted);text-align:center;padding:10px;">该学生还没有加分项</p>';return;} box.innerHTML=`<div style="font-size:10px;font-weight:700;margin-bottom:6px;">已确认 ${state.activities.length} 项</div><table class="data-table"><tbody>${state.activities.map((a,i)=>`<tr><td>${esc(a.activity)}</td><td>${Number(a.score||0).toFixed(2)}</td><td><button class="btn btn-ghost btn-sm" data-remove="${i}">×</button></td></tr>`).join('')}</tbody></table>`;box.querySelectorAll('[data-remove]').forEach(btn=>btn.onclick=()=>state.options.onRemove?.(Number(btn.dataset.remove))); }
-    const api = { mount,setStudents,setStudent,setFiles,setThresholds,open,close,getDraft,clearDraft,renderCapPreview,filterPresets,saveDraft,restoreDraft,saveAsUserTemplate,duplicateWarning };
+    const api = { mount,setStudents,setStudent,setFiles,setThresholds,open,close,getDraft,clearDraft,renderThresholdSummary,renderCapPreview,filterPresets,saveDraft,restoreDraft,saveAsUserTemplate,duplicateWarning };
     window.QualityMaterialDrawer = api;
 })();
