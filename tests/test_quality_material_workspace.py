@@ -57,6 +57,7 @@ class QualityMaterialWorkspaceTests(unittest.TestCase):
         self.assertIsNotNone(match)
         body = match.group(0)
         self.assertIn('QualityMaterialDrawer.setThresholds', body)
+        self.assertIn('qualityBatchRenderCapHint', body)
         self.assertNotIn('qualityImportRenderViewerScores', body)
 
     def test_frontend_fallback_keeps_the_six_current_caps(self):
@@ -66,6 +67,42 @@ class QualityMaterialWorkspaceTests(unittest.TestCase):
                      '技能培训与证书上限', '学生干部任职取最高', '新生班主任助理取最高'):
             self.assertIn(name, js)
         self.assertNotIn("name:'社会实践类上限'", js)
+
+    def test_batch_scoring_loads_shared_catalog_categories_and_cap_summary(self):
+        js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
+        init = re.search(
+            r'async function qualityBatchInitUI\(\).*?(?=\n\s*function qualityBatchRenderStudentList)',
+            js, re.S,
+        )
+        self.assertIsNotNone(init)
+        for token in ('load_activity_mappings_json', 'get_quality_categories',
+                      'qb-datalist', 'qb-cat', 'qualityBatchRenderCapHint',
+                      'Object.values(mappings', 'qualityThresholds.forEach'):
+            self.assertIn(token, init.group(0))
+        self.assertIn('id="qb-cap-hint"', js)
+
+    def test_batch_scoring_shows_matching_sum_and_max_item_caps(self):
+        js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
+        renderer = re.search(
+            r'function qualityBatchRenderCapHint\(\).*?(?=\n\s*function qualityBatchRenderStudentList)',
+            js, re.S,
+        )
+        self.assertIsNotNone(renderer)
+        body = renderer.group(0)
+        for token in ("thCats.includes(category)", "th.mode === 'max_item'",
+                      '本组多项只取最高', '本组累计最高'):
+            self.assertIn(token, body)
+
+        activity_handler = re.search(
+            r'async function qualityBatchOnActivityInput\(\).*?(?=\n\s*async function qualityBatchOnCat)',
+            js, re.S,
+        )
+        category_handler = re.search(
+            r'async function qualityBatchOnCat\(\).*?(?=\n\s*function qualityBatchGatherInput)',
+            js, re.S,
+        )
+        self.assertIn('qualityBatchRenderCapHint', activity_handler.group(0))
+        self.assertIn('qualityBatchRenderCapHint', category_handler.group(0))
 
     def test_saved_shadow_duplicates_from_the_broken_drawer_are_repaired(self):
         js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')

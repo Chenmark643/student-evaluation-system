@@ -155,6 +155,7 @@ async function renderModuleQuality() {
                     <div class="form-group"><label>等级</label><select id="qb-grade" class="select-input" style="width:100px;"></select></div>
                     <div class="form-group"><label>分数</label><input id="qb-score" class="input" type="number" style="width:70px;" placeholder="0" step="0.5" min="0"></div>
                 </div>
+                <div id="qb-cap-hint" class="quality-batch-cap-hint" style="margin-top:8px;font-size:10px;color:var(--text-muted);">选择项目或类别后显示适用上限</div>
             </div>
             <div style="display:flex;gap:12px;margin-bottom:12px;">
                 <div style="flex:1;min-width:0;">
@@ -246,7 +247,7 @@ async function renderModuleQuality() {
         qualityImportUpdateButtons();
         // Show batch section and init
         const bs = document.getElementById('quality-batch-section'); if (bs) bs.style.display = 'block';
-        qualityBatchInitUI(); qualityBatchRenderStudentList();
+        await qualityBatchInitUI(); qualityBatchRenderStudentList();
     } else {
         if (Object.keys(qualityRoster).length > 0) {
             setTimeout(() => {
@@ -280,7 +281,7 @@ async function qualityImportRoster() {
             document.getElementById('quality-roster-status').textContent = `已导入 ${Object.keys(result).length} 名学生, ${qualityClassOrder.length} 个班级`;
             if (qualityMode === 'manual') qualityManualRenderList();
             if (qualityMode === 'import' && qualityImportTree) { const ts = document.getElementById('quality-import-tree-section'); if (ts) ts.style.display = 'block'; }
-            if (qualityMode === 'import') { const bs = document.getElementById('quality-batch-section'); if (bs) bs.style.display = 'block'; qualityBatchTargets = new Set(); qualityBatchInitUI(); qualityBatchRenderStudentList(); }
+            if (qualityMode === 'import') { const bs = document.getElementById('quality-batch-section'); if (bs) bs.style.display = 'block'; qualityBatchTargets = new Set(); await qualityBatchInitUI(); qualityBatchRenderStudentList(); }
             showToast('花名册导入成功', 'success');
         }
     } catch(e) { showToast('导入失败: ' + e, 'error'); }
@@ -831,7 +832,7 @@ async function qualityImportShowThresholds() {
 function qualityImportUpdateThreshold(idx, value) { const v = parseFloat(value) || 0; if (idx >= 0 && idx < qualityThresholds.length) qualityThresholds[idx].max = v; }
 async function qualityImportDeleteThreshold(idx) { if (idx<0||idx>=qualityThresholds.length) return; const th = qualityThresholds[idx]; if (QUALITY_DEFAULT_THRESHOLD_NAMES.has(th.name)) { showToast('默认阈值不可删除','warning'); return; } try { qualityThresholds = await eel.remove_custom_threshold_category(th.name)(); showToast('已删除','success'); qualityImportShowThresholds(); } catch(e) { showToast('删除失败: '+e,'error'); } }
 async function qualityImportConfirmAddThreshold() { const name = document.getElementById('mvth-new-name').value.trim(), mode = document.getElementById('mvth-new-mode')?.value||'sum', maxScore = parseFloat(document.getElementById('mvth-new-max').value)||0, cats = [...document.querySelectorAll('.mvth-cat-cb:checked')].map(cb=>cb.value); if(!name){showToast('请输入名称','warning');return;} if(cats.length===0){showToast('请选择适用类别','warning');return;} if(maxScore<=0){showToast('请输入有效上限','warning');return;} try{qualityThresholds=await eel.add_custom_threshold_category(name,maxScore,cats,mode)();showToast(`已添加(${mode==='max_item'?'取最高':'求和封顶'})`,'success');qualityImportShowThresholds();}catch(e){showToast('添加失败: '+e,'error');} }
-function qualityImportRefreshAfterThreshold() { QualityMaterialDrawer.setThresholds(qualityThresholds); }
+function qualityImportRefreshAfterThreshold() { QualityMaterialDrawer.setThresholds(qualityThresholds); qualityBatchRenderCapHint(); }
 
 async function qualityImportOnActivityInput() { const a = document.getElementById('mv-activity').value.trim(); if(!a)return; try{const s=await eel.get_activity_suggestions(a)();if(s&&s.category){document.getElementById('mv-cat').value=s.category;qualityImportOnViewerCat();setTimeout(()=>{if(s.default_grade)document.getElementById('mv-grade').value=s.default_grade;if(s.default_score)document.getElementById('mv-score').value=s.default_score;},100);}}catch(e){} }
 
@@ -1026,16 +1027,79 @@ async function qualityImportOpenFolder(){
 // Batch Bonus (批量加分)
 // ============================================================
 
-function qualityBatchInitUI() {
-    const sel = document.getElementById('qb-class-filter');
-    if (!sel) return;
-    sel.innerHTML = '<option value="">全部班级</option>';
-    qualityClassOrder.forEach(cls => {
-        const o = document.createElement('option');
-        o.value = cls; o.textContent = cls;
-        if (cls === qualityBatchClassFilter) o.selected = true;
-        sel.appendChild(o);
+async function qualityBatchInitUI() {
+    const classSel = document.getElementById('qb-class-filter');
+    if (classSel) {
+        classSel.innerHTML = '<option value="">全部班级</option>';
+        qualityClassOrder.forEach(cls => {
+            const option = document.createElement('option');
+            option.value = cls;
+            option.textContent = cls;
+            option.selected = cls === qualityBatchClassFilter;
+            classSel.appendChild(option);
+        });
+    }
+    try {
+        const [categories, mappings] = await Promise.all([
+            eel.get_quality_categories()(),
+            eel.load_activity_mappings_json()(),
+        ]);
+        const categorySel = document.getElementById('qb-cat');
+        const datalist = document.getElementById('qb-datalist');
+        const categoryNames = new Set(categories || []);
+        Object.values(mappings || {}).forEach(mapping => {
+            if (mapping && mapping.category) categoryNames.add(mapping.category);
+        });
+        qualityThresholds.forEach(threshold => {
+            (threshold.categories || []).forEach(category => categoryNames.add(category));
+        });
+        if (categorySel) {
+            const current = categorySel.value;
+            categorySel.innerHTML = '<option value="">-- 类别 --</option>';
+            categoryNames.forEach(category => {
+                const option = document.createElement('option');
+                option.value = category;
+                option.textContent = category;
+                categorySel.appendChild(option);
+            });
+            if ([...categorySel.options].some(option => option.value === current)) categorySel.value = current;
+        }
+        if (datalist) {
+            datalist.innerHTML = '';
+            Object.keys(mappings || {}).forEach(name => {
+                const option = document.createElement('option');
+                option.value = name;
+                datalist.appendChild(option);
+            });
+        }
+    } catch (error) {
+        console.error('批量加分选项加载失败', error);
+    }
+    qualityBatchRenderCapHint();
+}
+
+function qualityBatchRenderCapHint() {
+    const target = document.getElementById('qb-cap-hint');
+    const category = document.getElementById('qb-cat')?.value || '';
+    if (!target) return;
+    if (!category) {
+        target.textContent = '选择项目或类别后显示适用上限';
+        return;
+    }
+    const rules = qualityThresholds.filter(th => {
+        const thCats = th.categories || [];
+        return thCats.includes(category);
     });
+    if (!rules.length) {
+        target.textContent = `“${category}”暂无上限规则`;
+        return;
+    }
+    target.innerHTML = rules.map(th => {
+        const isMaxItem = th.mode === 'max_item';
+        return isMaxItem
+            ? `🏆 ${escapeHtml(th.name)}：本组多项只取最高，最高 ${th.max} 分`
+            : `Σ ${escapeHtml(th.name)}：本组累计最高 ${th.max} 分`;
+    }).join('<br>');
 }
 
 function qualityBatchRenderStudentList() {
@@ -1135,18 +1199,17 @@ function qualityBatchClearSelection() {
 
 async function qualityBatchOnActivityInput() {
     const a = document.getElementById('qb-activity').value.trim();
-    if (!a) return;
+    if (!a) { qualityBatchRenderCapHint(); return; }
     try {
         const s = await eel.get_activity_suggestions(a)();
         if (s && s.category) {
             document.getElementById('qb-cat').value = s.category;
             await qualityBatchOnCat();
-            setTimeout(function() {
-                if (s.default_grade) document.getElementById('qb-grade').value = s.default_grade;
-                if (s.default_score) document.getElementById('qb-score').value = s.default_score;
-            }, 100);
+            if (s.default_grade) document.getElementById('qb-grade').value = s.default_grade;
+            if (s.default_score !== undefined && s.default_score !== null) document.getElementById('qb-score').value = s.default_score;
         }
     } catch(e) {}
+    qualityBatchRenderCapHint();
 }
 
 async function qualityBatchOnCat() {
@@ -1159,6 +1222,7 @@ async function qualityBatchOnCat() {
             grades.forEach(function(g) { const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o); });
         } catch(e) {}
     }
+    qualityBatchRenderCapHint();
 }
 
 function qualityBatchGatherInput() {
