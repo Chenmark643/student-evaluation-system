@@ -8,10 +8,14 @@ import sys
 # Base directory resolution (works both dev and PyInstaller bundled)
 if getattr(sys, 'frozen', False):
     BASE_DIR = sys._MEIPASS
+    DATA_DIR = os.path.join(
+        os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
+        '顿河学院学生测评管理软件',
+        'data',
+    )
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-DATA_DIR = os.path.join(BASE_DIR, 'data')
+    DATA_DIR = os.path.join(BASE_DIR, 'data')
 WEB_DIR = os.path.join(BASE_DIR, 'web')
 
 # Ensure data directory exists
@@ -60,6 +64,12 @@ QUALITY_CATEGORIES = [
     '学生工作类',
     '社会实践类',
     '技能证书类',
+    '班主任助理类',
+    '社会实践荣誉类',
+    '比赛志愿服务类',
+    '学院活动参与类',
+    '寒暑假实践类',
+    '其他加分',
 ]
 QUALITY_GRADES = {
     '文体艺术类': [
@@ -84,6 +94,11 @@ QUALITY_GRADES = {
     '技能证书类': [
         '国家级证书', '其他证书',
     ],
+    '班主任助理类': ['优秀', '良好', '合格'],
+    '社会实践荣誉类': ['国家级', '省部级', '校级', '考核优秀', '考核良好', '合格及以下'],
+    '比赛志愿服务类': ['每次'],
+    '学院活动参与类': ['每次'],
+    '寒暑假实践类': ['有证明/报道/奖励'],
     # ---- 兼容旧版（已保存数据不丢失） ----
     'A类': ['国家级', '省级', '市级', '校级', '院级'],
     'B类': ['国家级', '省级', '市级', '校级', '院级'],
@@ -112,14 +127,8 @@ QUALITY_GRADES = {
 #   {max, mode} → mode='max_item'（取最高单项分作为上限）
 # 注意：max_item 模式下 max 为绝对上限（最高分超出 max 时取 max）
 DEFAULT_THRESHOLDS = {
-    '社会实践类': 3.0,                                # 求和封顶
     '学生工作类': {'max': 3.0, 'mode': 'max_item'},  # 取最高分
     '技能证书类': 3.0,                                # 求和封顶
-    # 兼容旧版
-    '志愿类': 3.0,
-    '组织测评': {'max': 3.0, 'mode': 'max_item'},    # 组织测评也取最高
-    '社会实践': 3.0,
-    '技能培训': 3.0,
 }
 
 # Module D constants

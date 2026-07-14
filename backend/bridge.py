@@ -58,73 +58,67 @@ from backend.module_c_quality import (
 )
 from backend.module_d_comprehensive import process_comprehensive
 from backend.utils.progress_reporter import ProgressReporter
+from backend.import_studio import (
+    analyze_import_file as analyze_import_file_impl,
+    list_import_templates as list_import_templates_impl,
+    save_import_template as save_import_template_impl,
+)
+from backend.quality_presets import (
+    build_official_presets, calculate_activity_score, validate_manual_score,
+)
 
 
 # ============================================================
-# File dialog helpers
+# File dialog helpers for legacy Eel/dev mode.
+# The desktop build overrides these through backend.api and uses pywebview's
+# window-owned dialogs so they cannot appear behind the application.
 # ============================================================
+
+def _diag(msg):
+    try:
+        with open(os.path.join(tempfile.gettempdir(), 'app_diag.log'), 'a', encoding='utf-8') as f:
+            import datetime as _dt
+            f.write(f'[{_dt.datetime.now():%H:%M:%S}] {msg}\n')
+    except Exception:
+        pass
+
+@eel.expose
+def ping_diag():
+    """Diagnostic: verify API bridge works."""
+    _diag('ping_diag called — API bridge OK')
+    return 'pong'
+
+
+def _legacy_dialog(dialog, *, title, file_types=None):
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    try:
+        return dialog(title=title, filetypes=file_types or [('所有文件', '*.*')])
+    finally:
+        root.destroy()
 
 @eel.expose
 def select_file(file_types: list = None, title: str = '选择文件') -> str:
-    """Open native OS file picker dialog.
-
-    Args:
-        file_types: List of (description, pattern) tuples,
-                    e.g. [('Excel Files', '*.xls *.xlsx')]
-        title: Dialog title
-
-    Returns:
-        Selected file path, or empty string if cancelled.
-    """
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-
-    if file_types:
-        ft = [(d, p) for d, p in file_types]
-    else:
-        ft = [('Excel Files', '*.xls *.xlsx'), ('All Files', '*.*')]
-
-    path = filedialog.askopenfilename(title=title, filetypes=ft)
-    root.destroy()
-    return path if path else ''
-
+    _diag(f'select_file called: title={title}')
+    return _legacy_dialog(filedialog.askopenfilename, title=title, file_types=file_types) or ''
 
 @eel.expose
 def select_directory(title: str = '选择输出目录') -> str:
-    """Open native OS directory picker dialog.
-
-    Returns:
-        Selected directory path, or empty string if cancelled.
-    """
+    _diag(f'select_directory called')
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
-
-    path = filedialog.askdirectory(title=title)
-    root.destroy()
-    return path if path else ''
-
+    try:
+        return filedialog.askdirectory(title=title) or ''
+    finally:
+        root.destroy()
 
 @eel.expose
 def select_files(file_types: list = None, title: str = '选择文件') -> list:
-    """Open native OS multi-file picker dialog.
-
-    Returns:
-        List of selected file paths.
-    """
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-
-    if file_types:
-        ft = [(d, p) for d, p in file_types]
-    else:
-        ft = [('Excel Files', '*.xls *.xlsx'), ('All Files', '*.*')]
-
-    paths = filedialog.askopenfilenames(title=title, filetypes=ft)
-    root.destroy()
-    return list(paths) if paths else []
+    _diag(f'select_files called')
+    paths = _legacy_dialog(filedialog.askopenfilenames, title=title, file_types=file_types)
+    return list(paths or [])
 
 
 # ============================================================
@@ -132,7 +126,8 @@ def select_files(file_types: list = None, title: str = '选择文件') -> list:
 # ============================================================
 
 @eel.expose
-def run_module_a(input_path: str, output_dir: str) -> dict:
+def run_module_a(input_path: str, output_dir: str,
+                 column_mappings: dict = None, major_filter: str = '') -> dict:
     """Run GPA calculation (Module A) — single file.
 
     Args:
@@ -143,14 +138,16 @@ def run_module_a(input_path: str, output_dir: str) -> dict:
         Result dict with output paths and statistics.
     """
     try:
-        result = process_gpa(input_path, output_dir)
+        result = process_gpa(input_path, output_dir, column_mappings=column_mappings,
+                             major_filter=major_filter)
         return result
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 
 @eel.expose
-def run_module_a_batch(input_paths: list, output_dir: str) -> dict:
+def run_module_a_batch(input_paths: list, output_dir: str,
+                       column_mappings: dict = None, major_filter: str = '') -> dict:
     """Run GPA calculation (Module A) — batch mode.
 
     Args:
@@ -162,7 +159,9 @@ def run_module_a_batch(input_paths: list, output_dir: str) -> dict:
     """
     try:
         from backend.module_a_gpa import process_gpa_batch
-        result = process_gpa_batch(input_paths, output_dir)
+        result = process_gpa_batch(input_paths, output_dir,
+                                   column_mappings=column_mappings or {},
+                                   major_filter=major_filter)
         return result
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -199,6 +198,69 @@ def preview_moral_file(filepath: str) -> dict:
 
 
 @eel.expose
+def analyze_import_file(filepath: str, module_type: str) -> dict:
+    return analyze_import_file_impl(filepath, module_type)
+
+
+@eel.expose
+def analyze_gpa_course_structure(filepath: str, sheet_mapping: dict = None) -> dict:
+    try:
+        from backend.gpa_course_audit import analyze_gpa_course_structure as analyze
+        return analyze(filepath, sheet_mapping or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def audit_toolbox_applicants(config: dict) -> dict:
+    try:
+        from backend.toolbox_audit import audit_applicants
+        return audit_applicants(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+@eel.expose
+def prepare_award_roster(file_path: str) -> dict:
+    try:
+        from backend.award_eligibility import prepare_roster
+        return prepare_roster(file_path)
+    except Exception as exc:
+        return {'success':False,'error':str(exc)}
+
+@eel.expose
+def audit_award_candidates(config: dict) -> dict:
+    try:
+        from backend.award_eligibility import audit_candidates
+        return audit_candidates(config)
+    except Exception as exc:
+        return {'success':False,'error':str(exc)}
+
+
+@eel.expose
+def export_toolbox_audit(students: list, output_path: str) -> dict:
+    try:
+        from backend.toolbox_audit import export_audit_report
+        return export_audit_report(students or [], output_path)
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def save_import_template(name: str, module_type: str,
+                         fingerprint: str, mappings: dict) -> dict:
+    try:
+        record = save_import_template_impl(name, module_type, fingerprint, mappings or {})
+        return {'success': True, 'template': record}
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def list_import_templates(module_type: str = '') -> list:
+    return list_import_templates_impl(module_type)
+
+
+@eel.expose
 def run_module_b(roster_path: str,
                  absence_files: list, class_absence_files: list,
                  dormitory_files: list, classroom_files: list,
@@ -208,7 +270,7 @@ def run_module_b(roster_path: str,
                  column_mappings: dict = None,
                  manual_scores: dict = None,
                  selected_columns: list = None,
-                 grade_filter: str = 'all') -> dict:
+                 grade_filter: str = 'all', major_filter: str = '') -> dict:
     """Run moral education calculation (Module B).
 
     Args:
@@ -242,6 +304,7 @@ def run_module_b(roster_path: str,
             manual_scores=manual_scores or {},
             selected_columns=selected_columns,
             grade_filter=grade_filter,
+            major_filter=major_filter,
         )
         return result
     except Exception as e:
@@ -268,6 +331,24 @@ def get_quality_grades(category: str) -> list:
 def get_quality_thresholds() -> dict:
     """Get default threshold settings."""
     return get_thresholds()
+
+
+@eel.expose
+def get_official_quality_presets() -> list:
+    """Return the immutable rule catalog used by the scoring drawer."""
+    return build_official_presets()
+
+
+@eel.expose
+def preview_quality_activity_score(base_score: float, count: int = 1,
+                                   contribution: float = 1.0,
+                                   related: bool = False) -> dict:
+    return calculate_activity_score(base_score, count, contribution, related)
+
+
+@eel.expose
+def validate_quality_manual_score(value: float, score_range=None) -> dict:
+    return validate_manual_score(value, score_range)
 
 
 @eel.expose
@@ -363,10 +444,17 @@ def read_roster_for_quality(roster_path: str) -> dict:
 
 @eel.expose
 def export_quality_with_roster(roster: dict, quality_data: dict,
-                                output_path: str, thresholds=None) -> dict:
+                                output_path: str, thresholds=None,
+                                major_filter: str = '') -> dict:
     """Export quality scores with merged cells and formulas."""
     try:
         from backend.module_c_quality import export_quality_merged
+        from backend.utils.class_utils import class_matches_program
+        if major_filter:
+            roster = {sid: info for sid, info in (roster or {}).items()
+                      if class_matches_program(info.get('class', info.get('班级', '')), major_filter)}
+            quality_data = {sid: value for sid, value in (quality_data or {}).items()
+                            if sid in roster}
         # Normalize thresholds: if dict from JS, convert to list format
         if isinstance(thresholds, dict):
             th_list = []
@@ -386,9 +474,13 @@ def export_quality_with_roster(roster: dict, quality_data: dict,
 
 @eel.expose
 def export_quality_scores_json(class_data: dict, output_path: str,
-                                thresholds=None) -> dict:
+                                thresholds=None, major_filter: str = '') -> dict:
     """Export quality development scores."""
     try:
+        from backend.utils.class_utils import class_matches_program
+        if major_filter:
+            class_data = {name: value for name, value in (class_data or {}).items()
+                          if class_matches_program(name, major_filter)}
         result = export_quality_scores(class_data, output_path, thresholds)
         return result
     except Exception as e:
@@ -405,7 +497,7 @@ def run_module_d(gpa_path: str, moral_path: str,
                  has_sports: bool = False,
                  sports_programs: list = None,
                  column_mappings: dict = None,
-                 grade_filter: str = 'all') -> dict:
+                 grade_filter: str = 'all', major_filter: str = '') -> dict:
     """Run comprehensive evaluation (Module D).
 
     Args:
@@ -431,6 +523,7 @@ def run_module_d(gpa_path: str, moral_path: str,
             sports_programs=sports_programs or [],
             column_mappings=column_mappings or {},
             grade_filter=grade_filter,
+            major_filter=major_filter,
         )
         return result
     except Exception as e:
@@ -685,81 +778,6 @@ def compare_with_current(prev_file: str, current_data: list) -> dict:
         return {'success': True, 'data': data}
     except Exception as e:
         return {'success': False, 'error': str(e)}
-
-
-# ============================================================
-# AI Assistant (DeepSeek)
-# ============================================================
-
-from backend.ai_assistant import (
-    set_api_key, get_api_key, has_api_key,
-    chat, analyze_file_structure, verify_formula_logic,
-)
-
-
-@eel.expose
-def ai_set_key(key: str) -> bool:
-    """Save DeepSeek API key."""
-    try:
-        set_api_key(key)
-        return True
-    except Exception:
-        return False
-
-
-@eel.expose
-def ai_has_key() -> bool:
-    """Check if API key is configured."""
-    return has_api_key()
-
-
-@eel.expose
-def ai_chat(prompt: str) -> str:
-    """Send a chat message to DeepSeek AI."""
-    return chat(prompt)
-
-
-@eel.expose
-def ai_analyze_file(file_path: str) -> str:
-    """AI analyzes an Excel file's structure and returns recommendations.
-
-    Reads the file, extracts headers and sample data, then asks AI to analyze.
-    """
-    try:
-        from backend.parsers.xls_reader import read_raw_xls
-        import pandas as pd
-
-        df = read_raw_xls(file_path)
-        if df.empty:
-            return '文件为空或无法读取。'
-
-        headers = df.columns.tolist()
-        sample_rows = df.head(3).to_dict(orient='records')
-
-        # Convert to JSON-safe format
-        def safe_val(v):
-            if pd.isna(v) if isinstance(v, float) else v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return v
-            return str(v)
-
-        clean_rows = []
-        for row in sample_rows:
-            clean_rows.append({str(k): safe_val(v) for k, v in row.items()})
-
-        return analyze_file_structure(
-            [str(h) for h in headers],
-            clean_rows,
-        )
-    except Exception as e:
-        return f'分析失败: {str(e)}'
-
-
-@eel.expose
-def ai_verify_formula(formula_desc: str, rules: str) -> str:
-    """AI verifies a formula against expected rules."""
-    return verify_formula_logic(formula_desc, rules)
 
 
 # ============================================================
@@ -1049,7 +1067,6 @@ def generate_parent_notice(student_data: dict, semester: str,
         Formatted text notice (can be printed or exported).
     """
     try:
-        from backend.ai_assistant import chat
         prompt = f"""你是一位高校辅导员。请为以下学生撰写一份《学业情况告知书》，语气温和但严肃，适合发给家长。
 
 学生信息：
@@ -1070,8 +1087,7 @@ def generate_parent_notice(student_data: dict, semester: str,
 3. 末尾署名「顿河学院团委秘书处」
 4. 开头直接写您好，不要用尊敬的家长开头
 """
-        notice = chat(prompt)
-        return notice if notice else _generate_simple_notice(student_data, semester, class_avg)
+        return _generate_simple_notice(student_data, semester, class_avg)
     except Exception:
         return _generate_simple_notice(student_data, semester, class_avg)
 
@@ -1188,7 +1204,7 @@ def smart_detect_file_info(file_path: str) -> dict:
             info['grade'] = year_m.group(1)
 
     # Detect major
-    major_keywords = ['顿河交', '顿河土', '顿河信', '国电', '国商']
+    major_keywords = ['顿河交', '顿河土', '顿河信', '国电']
     for mk in major_keywords:
         if mk in basename:
             info['major'] = mk
@@ -1645,11 +1661,21 @@ def _get_class_name_from_zip(zip_path: str) -> str:
     return basename if basename else '未识别班级'
 
 
+def _get_7z_path() -> str:
+    """Get path to the bundled 7z.exe (works in dev and PyInstaller mode)."""
+    import sys as _sys
+    if getattr(_sys, 'frozen', False):
+        base = _sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, 'tools', '7z.exe')
+
+
 def _extract_archive(archive_path: str, dest_dir: str) -> bool:
     """Extract a ZIP/RAR/7z archive to dest_dir.
 
-    ZIP → built-in zipfile (fast, always available)
-    RAR/7z/other → patoolib (universal backend, auto-finds installed tools)
+    ZIP  → built-in zipfile (fast, always available)
+    RAR/7z → bundled 7z.exe (no external dependencies needed)
     """
     ext = os.path.splitext(archive_path)[1].lower()
 
@@ -1658,18 +1684,33 @@ def _extract_archive(archive_path: str, dest_dir: str) -> bool:
             zf.extractall(dest_dir)
         return True
 
-    # All other formats via patoolib
-    try:
-        import patoolib
-        patoolib.extract_archive(archive_path, outdir=dest_dir, interactive=False)
-        return True
-    except ImportError:
-        raise RuntimeError(
-            '需要安装patool库。请在终端运行: pip install patool')
-    except Exception as e:
-        raise RuntimeError(
-            f'解压失败({os.path.basename(archive_path)}): {e}. '
-            '请确保系统已安装WinRAR或7-Zip。')
+    # RAR, 7z, and everything else → bundled 7z.exe
+    sz = _get_7z_path()
+    if os.path.isfile(sz):
+        try:
+            subprocess.run(
+                [sz, 'x', archive_path, f'-o{dest_dir}', '-y'],
+                check=True, capture_output=True, timeout=300,
+                creationflags=0x08000000 if sys.platform == 'win32' else 0,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode('utf-8', errors='replace') if e.stderr else ''
+            raise RuntimeError(f'解压失败({os.path.basename(archive_path)}): {stderr[:200]}')
+        except Exception as e:
+            raise RuntimeError(f'解压失败({os.path.basename(archive_path)}): {e}')
+    else:
+        # Fallback: try patoolib (requires system WinRAR/7-Zip)
+        try:
+            import patoolib
+            patoolib.extract_archive(archive_path, outdir=dest_dir, interactive=False)
+            return True
+        except ImportError:
+            raise RuntimeError('需要安装patool库。请在终端运行: pip install patool')
+        except Exception as e:
+            raise RuntimeError(
+                f'解压失败({os.path.basename(archive_path)}): {e}. '
+                '请确保系统已安装WinRAR或7-Zip。')
 
 
 def _flatten_single_child_folders(dir_path: str) -> int:
@@ -2208,7 +2249,8 @@ def delete_material_item(base_dir: str, rel_path: str) -> dict:
 
 
 @eel.expose
-def add_files_to_student(base_dir: str, student_rel_path: str) -> dict:
+def add_files_to_student(base_dir: str, student_rel_path: str,
+                         selected_paths: list = None) -> dict:
     """Open file picker and copy selected files into student folder.
 
     Returns:
@@ -2218,16 +2260,12 @@ def add_files_to_student(base_dir: str, student_rel_path: str) -> dict:
     if not os.path.exists(dest_dir):
         return {'success': False, 'error': '学生目录不存在'}
 
-    # Open file picker
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    paths = filedialog.askopenfilenames(
-        title='选择要添加的文件',
-        filetypes=[('所有支持的文件',
-                    '*.jpg *.jpeg *.png *.gif *.bmp *.pdf *.doc *.docx'),
-                   ('所有文件', '*.*')])
-    root.destroy()
+    paths = selected_paths
+    if paths is None:
+        paths = select_files(
+            title='选择要添加的文件',
+            file_types=[('图片和文档', '*.jpg *.jpeg *.png *.gif *.bmp *.pdf *.doc *.docx'),
+                        ('所有文件', '*.*')])
 
     if not paths:
         return {'success': False, 'error': '未选择文件', 'added_files': []}

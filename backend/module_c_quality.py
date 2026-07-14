@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Module C: Quality Development Score Calculation (素质拓展分计算)
 
@@ -8,12 +9,15 @@ individual scores — only the total gets capped (no proportional scaling).
 
 import os
 import json
+from copy import deepcopy
 
 from backend.utils.excel_writer import write_multi_sheet_xlsx, write_values_sheet
 from backend.utils.progress_reporter import ProgressReporter
 from config import (
     ACTIVITY_MAPPINGS_FILE, QUALITY_CATEGORIES, QUALITY_GRADES,
-    DEFAULT_THRESHOLDS,
+)
+from backend.quality_presets import (
+    OFFICIAL_THRESHOLDS, extract_user_mappings, merge_official_with_user,
 )
 
 # Custom thresholds file
@@ -25,7 +29,7 @@ CUSTOM_THRESHOLDS_FILE = os.path.join(os.path.dirname(ACTIVITY_MAPPINGS_FILE),
 # Activity Mappings CRUD
 # ============================================================
 
-def load_activity_mappings() -> dict:
+def load_user_activity_mappings() -> dict:
     if os.path.exists(ACTIVITY_MAPPINGS_FILE):
         try:
             with open(ACTIVITY_MAPPINGS_FILE, 'r', encoding='utf-8') as f:
@@ -35,10 +39,15 @@ def load_activity_mappings() -> dict:
     return {}
 
 
+def load_activity_mappings() -> dict:
+    """Return the official catalog overlaid with user-created/edited rows."""
+    return merge_official_with_user(load_user_activity_mappings())
+
+
 def save_activity_mappings(mappings: dict):
     os.makedirs(os.path.dirname(ACTIVITY_MAPPINGS_FILE), exist_ok=True)
     with open(ACTIVITY_MAPPINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(mappings, f, ensure_ascii=False, indent=2)
+        json.dump(extract_user_mappings(mappings), f, ensure_ascii=False, indent=2)
 
 
 def get_activity_suggestion(activity_name: str) -> dict | None:
@@ -49,7 +58,7 @@ def get_activity_suggestion(activity_name: str) -> dict | None:
 
 
 def record_activity(activity_name: str, category: str, grade: str, score: float):
-    mappings = load_activity_mappings()
+    mappings = load_user_activity_mappings()
     mappings[activity_name] = {
         'category': category, 'default_grade': grade,
         'default_score': score, 'last_used': '',
@@ -58,21 +67,21 @@ def record_activity(activity_name: str, category: str, grade: str, score: float)
 
 
 def add_activity_mapping(name: str, category: str, grade: str, score: float) -> dict:
-    mappings = load_activity_mappings()
+    mappings = load_user_activity_mappings()
     mappings[name] = {
         'category': category, 'default_grade': grade,
         'default_score': score, 'last_used': '',
     }
     save_activity_mappings(mappings)
-    return mappings
+    return load_activity_mappings()
 
 
 def delete_activity_mapping(name: str) -> dict:
-    mappings = load_activity_mappings()
+    mappings = load_user_activity_mappings()
     if name in mappings:
         del mappings[name]
         save_activity_mappings(mappings)
-    return mappings
+    return load_activity_mappings()
 
 
 CUSTOM_CATEGORIES_FILE = os.path.join(os.path.dirname(ACTIVITY_MAPPINGS_FILE),
@@ -140,28 +149,8 @@ def get_grades_for_category(category: str) -> list:
 #   For group thresholds: categories = ["A类", "B类", "C类", "D类"]
 
 def _build_default_thresholds() -> list:
-    """Build default threshold list from config.
-
-    Supports both legacy float values (→ mode='sum') and new dict format:
-        {'max': 3.0, 'mode': 'max_item'}
-    """
-    defaults = []
-    for cat, spec in DEFAULT_THRESHOLDS.items():
-        if isinstance(spec, dict):
-            defaults.append({
-                'name': f'{cat}上限',
-                'max': float(spec.get('max', 0)),
-                'categories': [cat],
-                'mode': spec.get('mode', 'sum'),
-            })
-        else:
-            defaults.append({
-                'name': f'{cat}上限',
-                'max': float(spec),
-                'categories': [cat],
-                'mode': 'sum',
-            })
-    return defaults
+    """Return an isolated copy so UI edits cannot mutate official rules."""
+    return deepcopy(OFFICIAL_THRESHOLDS)
 
 
 def get_thresholds() -> list:
