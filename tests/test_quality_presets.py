@@ -30,6 +30,8 @@ class QualityPresetTests(unittest.TestCase):
         self.assertEqual(rules['寒暑假社会实践上限']['max'], 2.0)
         self.assertEqual(rules['技能培训与证书上限']['max'], 3.0)
         self.assertEqual(rules['学生干部任职取最高']['mode'], 'max_item')
+        self.assertIn('班委测评', rules['学生干部任职取最高']['categories'])
+        self.assertIn('组织测评', rules['学生干部任职取最高']['categories'])
         self.assertEqual(rules['新生班主任助理取最高']['max'], 2.0)
         self.assertFalse(any(row['categories'] == ['社会实践类'] for row in OFFICIAL_THRESHOLDS))
 

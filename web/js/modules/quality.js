@@ -39,7 +39,7 @@ const QUALITY_FALLBACK_THRESHOLDS = [
     {name:'学院活动参与每学期上限',max:1,categories:['学院活动参与类'],mode:'sum'},
     {name:'寒暑假社会实践上限',max:2,categories:['寒暑假实践类'],mode:'sum'},
     {name:'技能培训与证书上限',max:3,categories:['技能证书类','技能培训'],mode:'sum'},
-    {name:'学生干部任职取最高',max:3,categories:['学生工作类','学生工作','组织测评'],mode:'max_item'},
+    {name:'学生干部任职取最高',max:3,categories:['学生工作类','学生工作','班委测评','组织测评'],mode:'max_item'},
     {name:'新生班主任助理取最高',max:2,categories:['班主任助理类'],mode:'max_item'},
 ];
 

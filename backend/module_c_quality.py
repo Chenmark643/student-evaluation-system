@@ -227,6 +227,65 @@ def remove_custom_threshold(name: str) -> list:
 # Score Calculation (v2.1 — keep original scores, cap totals only)
 # ============================================================
 
+def _build_effective_score_groups(activities: list, thresholds: list) -> list:
+    """Group activities by threshold and calculate each group's effective score.
+
+    An activity belongs to at most one threshold (the first matching rule).  This
+    keeps overlapping custom rules deterministic and, more importantly, gives
+    calculation and Excel export the exact same grouping semantics.
+    """
+    assigned = set()
+    groups = []
+
+    for threshold in thresholds:
+        categories = set(threshold.get('categories', []))
+        matched = [
+            (index, activity)
+            for index, activity in enumerate(activities)
+            if index not in assigned and activity.get('category', '') in categories
+        ]
+        if not matched:
+            continue
+
+        assigned.update(index for index, _ in matched)
+        scores = [float(activity.get('score', 0) or 0) for _, activity in matched]
+        raw_score = sum(scores)
+        maximum = float(threshold.get('max', float('inf')))
+        mode = threshold.get('mode', 'sum')
+        if mode == 'max_item':
+            effective_score = min(max(scores, default=0.0), maximum)
+        else:
+            effective_score = min(raw_score, maximum)
+
+        groups.append({
+            'first_index': matched[0][0],
+            'activities': [activity for _, activity in matched],
+            'threshold': threshold.get('name', ''),
+            'categories': list(threshold.get('categories', [])),
+            'mode': mode,
+            'raw': round(raw_score, 2),
+            'effective': round(max(0.0, effective_score), 2),
+            'is_threshold': True,
+        })
+
+    for index, activity in enumerate(activities):
+        if index in assigned:
+            continue
+        score = round(float(activity.get('score', 0) or 0), 2)
+        groups.append({
+            'first_index': index,
+            'activities': [activity],
+            'threshold': '',
+            'categories': [activity.get('category', '')],
+            'mode': 'sum',
+            'raw': score,
+            'effective': score,
+            'is_threshold': False,
+        })
+
+    groups.sort(key=lambda group: group['first_index'])
+    return groups
+
 def calculate_quality_scores(
     student_activities: dict,
     thresholds: list = None,
@@ -256,46 +315,20 @@ def calculate_quality_scores(
             score = act.get('score', 0)
             category_totals[cat] = category_totals.get(cat, 0.0) + score
 
-        # Track which activities belong to each threshold
+        score_groups = _build_effective_score_groups(activities, thresholds)
         capped_details = []
-        total_deduction = 0.0
-
-        for threshold in thresholds:
-            th_cats = threshold.get('categories', [])
-            th_max = threshold.get('max', float('inf'))
-            th_name = threshold.get('name', '')
-            th_mode = threshold.get('mode', 'sum')  # 'sum' or 'max_item'
-
-            # Sum scores for all activities whose category is covered
-            raw_sum = sum(category_totals.get(c, 0.0) for c in th_cats)
-
-            # Determine effective cap
-            if th_mode == 'max_item':
-                # Cap = highest individual score among matching activities
-                all_scores = []
-                for act in activities:
-                    if act.get('category', '') in th_cats:
-                        all_scores.append(act.get('score', 0))
-                highest = max(all_scores) if all_scores else 0.0
-                effective_cap = min(highest, th_max)  # absolute ceiling
-            else:
-                effective_cap = th_max
-
-            if raw_sum > effective_cap:
-                excess = raw_sum - effective_cap
-                total_deduction += excess
+        for group in score_groups:
+            if group['is_threshold'] and group['raw'] > group['effective']:
                 capped_details.append({
-                    'threshold': th_name,
-                    'categories': th_cats,
-                    'mode': th_mode,
-                    'raw': round(raw_sum, 2),
-                    'capped': round(effective_cap, 2),
-                    'excess': round(excess, 2),
+                    'threshold': group['threshold'],
+                    'categories': group['categories'],
+                    'mode': group['mode'],
+                    'raw': group['raw'],
+                    'capped': group['effective'],
+                    'excess': round(group['raw'] - group['effective'], 2),
                 })
 
-        # Total = sum of all category scores minus deductions
-        raw_total = sum(category_totals.values())
-        final_total = round(max(0, raw_total - total_deduction), 2)
+        final_total = round(sum(group['effective'] for group in score_groups), 2)
 
         results[student_key] = {
             'activities': activities,
@@ -335,14 +368,6 @@ def export_quality_merged(
 
     if thresholds is None:
         thresholds = get_thresholds()
-
-    # Build a quick lookup: bonus_category -> list of (threshold_name, max)
-    cat_thresholds = {}
-    for th in thresholds:
-        for cat in th.get('categories', []):
-            if cat not in cat_thresholds:
-                cat_thresholds[cat] = []
-            cat_thresholds[cat].append((th['name'], th['max']))
 
     class_students = {}
     for sid, info in roster.items():
@@ -402,44 +427,26 @@ def export_quality_merged(
                 })
                 continue
 
-            # v2.3: Calculate capped total per category
-            scored = calculate_quality_scores({sid: activities}, thresholds)
-            capped_total = scored.get(sid, {}).get('total', 0.0)
-            capped_details = scored.get(sid, {}).get('capped_details', [])
+            # Calculate once using the same threshold groups that are rendered.
+            score_groups = _build_effective_score_groups(activities, thresholds)
+            capped_total = round(sum(group['effective'] for group in score_groups), 2)
             values_data.append({
                 '学号': sid, '姓名': name, '班级': class_name,
                 '拓展分': capped_total,
             })
 
-            # Build map of capped categories
-            capped_cats = {}
-            for cd in capped_details:
-                for cat in cd.get('categories', []):
-                    capped_cats[cat] = cd.get('capped', 0)
-
-            # Group activities by category (preserving insertion order)
-            cat_groups = {}
-            cat_order = []
-            for act in activities:
-                cat = act.get('category', '')
-                if cat not in cat_groups:
-                    cat_groups[cat] = []
-                    cat_order.append(cat)
-                cat_groups[cat].append(act)
-
             start_row = current_row
-            # Write each category group
-            for cat in cat_order:
-                acts = cat_groups[cat]
+            # Write each threshold as one score group.  Multiple categories covered
+            # by the same cap are merged together and show one effective value.
+            for group in score_groups:
+                acts = group['activities']
                 group_start = current_row
 
-                # Write each activity as separate row (keep 加分项独立)
                 for ai, act in enumerate(acts):
                     row = current_row + ai
                     ws.cell(row=row, column=3, value=act.get('activity', ''))
                     ws.cell(row=row, column=4, value=act.get('grade', ''))
-                    # 加分列: original score for uncapped, 0 (placeholder) for capped
-                    ws.cell(row=row, column=5, value=act.get('score', 0) if cat not in capped_cats else 0)
+                    ws.cell(row=row, column=5, value=0 if group['is_threshold'] else group['effective'])
                     for ci in range(3, 6):
                         c = ws.cell(row=row, column=ci)
                         c.font = Font(name='SimSun', size=10)
@@ -449,13 +456,11 @@ def export_quality_merged(
                 group_end = current_row + len(acts) - 1
                 current_row = group_end + 1
 
-                # If category exceeded cap: merge 加分列, show capped value
-                if cat in capped_cats:
+                if group['is_threshold']:
                     if len(acts) > 1:
                         ws.merge_cells(start_row=group_start, start_column=5,
                                        end_row=group_end, end_column=5)
-                    cap_val = capped_cats[cat]
-                    ws.cell(row=group_start, column=5, value=cap_val)
+                    ws.cell(row=group_start, column=5, value=group['effective'])
                     ws.cell(row=group_start, column=5).font = Font(name='SimSun', size=10)
                     ws.cell(row=group_start, column=5).alignment = Alignment(horizontal='center', vertical='center')
                     ws.cell(row=group_start, column=5).border = thin_border
@@ -476,13 +481,9 @@ def export_quality_merged(
             c_sid.number_format = '@'
             ws.cell(row=start_row, column=2, value=name)
 
-            # 拓展分 = capped total (plain value when capped, SUM formula otherwise)
-            if capped_details:
-                ws.cell(row=start_row, column=6, value=capped_total)
-            else:
-                e_col = get_column_letter(5)
-                formula = f'=SUM({e_col}{start_row}:{e_col}{end_row})'
-                ws.cell(row=start_row, column=6, value=formula)
+            # Always store the effective value so downstream files do not depend
+            # on Excel recalculating formulas after export.
+            ws.cell(row=start_row, column=6, value=capped_total)
 
             for ci in [1, 2, 6]:
                 c = ws.cell(row=start_row, column=ci)
