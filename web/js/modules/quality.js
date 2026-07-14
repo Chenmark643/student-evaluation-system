@@ -854,7 +854,17 @@ async function qualityImportAddScore() { const sd=qualityViewerStudent; if(!sd)r
 function qualityImportRemoveScore(sid,index){if(qualityData[sid]){qualityData[sid].splice(index,1);if(qualityData[sid].length===0)delete qualityData[sid];}qualityImportRenderViewerScores();_qualityImportAutoSave();}
 
 async function _qualityImportAutoSave(){if(!qualityImportBaseDir)return;try{await eel.save_quality_data_snapshot(qualityImportBaseDir,qualityData)();}catch(e){console.error(e);}}
-async function _qualityImportRestoreData(){if(!qualityImportBaseDir)return 0;try{const saved=await eel.load_quality_data_snapshot(qualityImportBaseDir)();if(saved&&Object.keys(saved).length>0){for(const[sid,acts]of Object.entries(saved)){if(!qualityData[sid])qualityData[sid]=[];if(qualityData[sid].length===0)qualityData[sid]=acts;}return Object.keys(saved).length;}}catch(e){console.error(e);}return 0;}
+function qualityRepairDrawerDuplicatePairs(activities){
+    const rows=Array.isArray(activities)?activities.slice():[];
+    for(let i=0;i<rows.length-1;i++){
+        const original=rows[i],shadow=rows[i+1];
+        const same=original&&shadow&&original.activity===shadow.activity&&original.category===shadow.category&&(original.grade||'')===(shadow.grade||'')&&Number(original.score)===Number(shadow.score)&&(original.official_preset_id||null)===(shadow.official_preset_id||null);
+        const generatedPair=same&&Object.prototype.hasOwnProperty.call(original,'base_score')&&!Object.prototype.hasOwnProperty.call(shadow,'base_score');
+        if(generatedPair){rows.splice(i+1,1);}
+    }
+    return rows;
+}
+async function _qualityImportRestoreData(){if(!qualityImportBaseDir)return 0;try{const saved=await eel.load_quality_data_snapshot(qualityImportBaseDir)();let repaired=false;if(saved&&Object.keys(saved).length>0){for(const[sid,acts]of Object.entries(saved)){const clean=qualityRepairDrawerDuplicatePairs(acts);if(clean.length!==(acts||[]).length)repaired=true;if(!qualityData[sid])qualityData[sid]=[];if(qualityData[sid].length===0)qualityData[sid]=clean;}if(repaired)await _qualityImportAutoSave();return Object.keys(saved).length;}}catch(e){console.error(e);}return 0;}
 
 // V9.2: Manual save/restore (user-visible JSON)
 async function qualityImportSaveScoreProgress(){

@@ -67,6 +67,14 @@ class QualityMaterialWorkspaceTests(unittest.TestCase):
             self.assertIn(name, js)
         self.assertNotIn("name:'社会实践类上限'", js)
 
+    def test_saved_shadow_duplicates_from_the_broken_drawer_are_repaired(self):
+        js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
+        self.assertIn('qualityRepairDrawerDuplicatePairs', js)
+        restore = re.search(r'async function _qualityImportRestoreData\(\).*?(?=\n\n)', js, re.S)
+        self.assertIsNotNone(restore)
+        self.assertIn('qualityRepairDrawerDuplicatePairs', restore.group(0))
+        self.assertIn('base_score', js)
+
     @staticmethod
     def _drawer():
         path = ROOT / 'web' / 'js' / 'components' / 'quality-material-drawer.js'
