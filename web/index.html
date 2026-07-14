@@ -8,40 +8,38 @@
     <link rel="stylesheet" href="css/layout.css">
     <link rel="stylesheet" href="css/components.css">
     <link rel="stylesheet" href="css/animations.css">
-    <script src="/eel.js"></script>
+    <link rel="stylesheet" href="css/apple-ui.css">
+    <link rel="stylesheet" href="css/liquid-glass.css">
+    <link rel="stylesheet" href="css/quality-material-workspace.css">
+    <link rel="stylesheet" href="css/don-college-ui.css">
+    <script src="js/pywebview-shim.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
-    <!-- Login Page -->
-    <div id="login-page" style="display:none;">
-        <div class="login-container">
-            <div class="login-card">
-                <div class="login-logo">
-                    <img src="college-logo.png" alt="Logo" style="width:64px;height:64px;object-fit:contain;"
-                         onerror="this.style.display='none'">
-                </div>
-                <h2 class="login-title">学生综合测评系统</h2>
-                <p class="login-sub">顿河学院团委秘书处</p>
-                <div class="login-form">
-                    <div class="form-group">
-                        <label>用户名</label>
-                        <input id="login-username" class="input" style="width:100%;" placeholder="请输入用户名">
-                    </div>
-                    <div class="form-group" style="margin-top:12px;">
-                        <label>密码</label>
-                        <input id="login-password" class="input" type="password" style="width:100%;" placeholder="请输入密码">
-                    </div>
-                    <div class="form-group" style="margin-top:12px;">
-                        <label>角色</label>
-                        <select id="login-role" class="select-input" style="width:100%;">
-                            <option value="secretary">秘书处</option>
-                            <option value="counselor">辅导员</option>
-                        </select>
-                    </div>
-                    <button class="btn btn-primary" style="width:100%;margin-top:20px;" onclick="doLogin()">登 录</button>
-                    <p id="login-error" style="font-size:11px;color:var(--color-error);margin-top:8px;text-align:center;display:none;"></p>
-                </div>
+    <!-- Identity Selection -->
+    <div id="role-selection-page" style="display:none;">
+        <div class="role-selection-container">
+            <img src="college-logo-v2.png" alt="顿河学院" class="role-selection-logo" onerror="this.style.display='none'">
+            <p class="role-selection-eyebrow">学生综合测评系统</p>
+            <h1>请选择您的身份</h1>
+            <p class="role-selection-sub">不同身份将进入对应的工作空间</p>
+            <div class="role-selection-cards">
+                <button class="role-card" onclick="selectRole('secretary')">
+                    <span class="role-card-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3h8l1 3h3v15H4V6h3l1-3Z"/><path d="M8 11h8M8 15h8"/></svg>
+                    </span>
+                    <span class="role-card-copy"><strong>秘书处</strong><small>测评计算、材料处理与结果导出</small></span>
+                    <span class="role-card-arrow">→</span>
+                </button>
+                <button class="role-card" onclick="selectRole('counselor')">
+                    <span class="role-card-icon counselor" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="4"/><path d="M4.5 21c.7-4.3 3.2-6.5 7.5-6.5s6.8 2.2 7.5 6.5"/></svg>
+                    </span>
+                    <span class="role-card-copy"><strong>辅导员</strong><small>学生信息、数据看板与日常管理</small></span>
+                    <span class="role-card-arrow">→</span>
+                </button>
             </div>
+            <p class="role-selection-note">无需账号密码，选择后即可进入</p>
         </div>
     </div>
 
@@ -49,10 +47,7 @@
     <div id="splash-screen">
         <div class="splash-content">
             <div class="splash-logo">
-                <svg viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
-                    <path d="M6 12v5c0 1.1 2.7 2 6 2s6-.9 6-2v-5"/>
-                </svg>
+                <img src="college-mark-v2.png" alt="顿河学院 Logo" class="splash-college-logo">
             </div>
             <h1 class="splash-title">学生综合测评系统</h1>
             <div class="splash-loader"><div class="splash-loader-bar"></div></div>
@@ -68,7 +63,7 @@
             <div class="counselor-header">
                 <div class="counselor-header-top">
                     <div class="counselor-header-left">
-                        <img src="college-logo.png" alt="Logo" style="width:32px;height:32px;object-fit:contain;" onerror="this.style.display='none'">
+                        <img src="college-logo-v2.png" alt="顿河学院" class="counselor-header-logo" onerror="this.style.display='none'">
                         <div><h2>辅导员工作台</h2></div>
                     </div>
                     <div class="counselor-header-right" style="gap:12px;">
@@ -133,7 +128,7 @@
         <div class="welcome-bg"></div>
         <div class="welcome-container">
             <div class="welcome-logo-area">
-                <img src="college-logo.png" alt="学院Logo" class="college-logo-img" onerror="this.style.display='none'">
+                <img src="college-logo-v2.png" alt="学院Logo" class="college-logo-img" onerror="this.style.display='none'">
             </div>
             <div class="welcome-greeting" id="counselor-welcome-greeting">
                 <h1 class="greeting-main"></h1>
@@ -146,42 +141,30 @@
             </div>
             <button class="btn btn-primary welcome-start-btn" onclick="startCounselorWork()">进入工作台 · Войти · Enter</button>
             <div style="margin-top:16px;">
-                <button class="btn btn-ghost btn-sm" onclick="doLogout()">切换账号</button>
+                <button class="btn btn-ghost btn-sm" onclick="doLogout()">切换身份</button>
             </div>
         </div>
     </div>
 
     <!-- Module Selection -->
     <div id="module-select-page" style="display:none;">
-        <div class="module-select-container">
-            <h2 class="module-select-title">选择功能模块</h2>
-            <p class="module-select-sub">Выберите модуль · Select Module</p>
-            <div class="module-cards">
-                <div class="module-card card-gpa" onclick="enterModule('gpa')">
-                    <div class="module-card-icon">📊</div>
-                    <h3>学分绩点计算</h3>
-                    <p>Расчет GPA · GPA Calculation</p>
-                    <div class="module-card-badge">成绩导入 → 绩点输出</div>
+        <div class="task-center-shell">
+            <header class="task-center-header">
+                <div class="task-center-brand">
+                    <img src="college-mark-v2.png" alt="顿河学院 Logo">
+                    <div><strong>顿河学院</strong><small>学生事务工作空间</small></div>
                 </div>
-                <div class="module-card card-moral" onclick="enterModule('moral')">
-                    <div class="module-card-icon">📋</div>
-                    <h3>德育分计算</h3>
-                    <p>Моральное воспитание · Moral</p>
-                    <div class="module-card-badge">多源数据 → 综合评分</div>
+                <div>
+                    <p class="task-center-eyebrow">秘书处工作台</p>
+                    <h1>测评任务中心</h1>
+                    <p>以学期任务组织材料、计算与结果，计分公式保持不变。</p>
                 </div>
-                <div class="module-card card-quality" onclick="enterModule('quality')">
-                    <div class="module-card-icon">⭐</div>
-                    <h3>素质拓展分计算</h3>
-                    <p>Развитие качеств · Quality</p>
-                    <div class="module-card-badge">加分录入 → 上限管控</div>
+                <div class="task-center-actions">
+                    <button class="btn btn-ghost" onclick="doLogout()">切换身份</button>
+                    <button class="btn btn-primary" onclick="openCreateEvaluationTask()">＋ 新建测评任务</button>
                 </div>
-                <div class="module-card card-comp" onclick="enterModule('comprehensive')">
-                    <div class="module-card-icon">📈</div>
-                    <h3>综合测评计算</h3>
-                    <p>Комплексная оценка · Comprehensive</p>
-                    <div class="module-card-badge">三合一 → 排名输出</div>
-                </div>
-            </div>
+            </header>
+            <main id="task-center-content" class="task-center-content"></main>
         </div>
     </div>
 
@@ -192,7 +175,7 @@
     <div id="app" style="display:none;">
         <nav id="sidebar">
             <div class="sidebar-logo" title="顿河学院团委秘书处">
-                <img src="college-logo.png" alt="Logo" class="sidebar-logo-img"
+                <img src="college-mark-v2.png" alt="顿河学院徽标" class="sidebar-logo-img"
                      onerror="this.style.display='none';this.parentElement.querySelector('svg').style.display='';">
                 <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" style="display:none;">
                     <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
@@ -221,6 +204,9 @@
                         <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
                     </svg><span>综测</span>
                 </button>
+                <button class="nav-btn" data-module="toolbox" title="荣誉资格核验台">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16v13H4z"/><path d="M9 7V4h6v3M4 12h16M10 12v2h4v-2"/></svg><span>工具箱</span>
+                </button>
             </div>
             <div class="sidebar-footer">
                 <button class="nav-btn" data-module="settings" title="设置">
@@ -244,6 +230,7 @@
             <header id="header">
                 <h1 id="module-title">学分绩点计算</h1>
                 <div class="header-actions">
+                    <button class="major-scope-chip" onclick="MajorScope.open()" title="设置当前专业"><span class="major-scope-dot"></span><span class="major-scope-caption">当前专业</span><strong data-major-scope-label>未设置专业</strong><span class="major-scope-edit">修改</span></button>
                     <span id="app-version" class="version-tag">v2.3</span>
                 </div>
             </header>
@@ -286,7 +273,7 @@
 
     <!-- Persistent quote / branding widgets -->
     <div id="corner-logo" title="顿河学院团委秘书处" style="display:none;">
-        <img src="college-logo.png" alt="Logo" class="corner-logo-img"
+        <img src="college-logo-v2.png" alt="Logo" class="corner-logo-img"
              onerror="this.parentElement.style.display='none';">
     </div>
     <div id="corner-quote" style="display:none;">
@@ -348,8 +335,9 @@
                     <button class="modal-close" onclick="closeMaterialViewer()">&times;</button>
                 </div>
             </div>
-            <div class="material-viewer-body">
-                <div class="material-viewer-left">
+            <div class="material-viewer-body quality-material-workspace">
+                <aside id="quality-student-rail" class="quality-student-rail"></aside>
+                <div id="quality-material-stage" class="material-viewer-left quality-material-stage">
                     <div class="material-file-list" id="material-file-list">
                         <p style="color:var(--text-muted);text-align:center;padding:12px;font-size:11px;">加载中...</p>
                     </div>
@@ -357,11 +345,7 @@
                         <p style="color:var(--text-muted);text-align:center;padding:40px;">选择左侧文件查看</p>
                     </div>
                 </div>
-                <div class="material-viewer-right">
-                    <h4 style="font-size:12px;margin-bottom:8px;margin-top:0;">加分判定（手动）</h4>
-                    <div id="material-scoring-form"></div>
-                    <div id="material-scoring-list" style="margin-top:12px;"></div>
-                </div>
+                <aside id="quality-score-drawer" class="material-viewer-right quality-score-drawer"><div id="material-scoring-form"></div><div id="quality-cap-preview"></div></aside>
             </div>
         </div>
     </div>
@@ -371,13 +355,18 @@
     <script src="js/components/modal.js"></script>
     <script src="js/components/progress-bar.js"></script>
     <script src="js/components/file-picker.js"></script>
+    <script src="js/components/import-studio.js"></script>
+    <script src="js/components/major-scope.js"></script>
     <script src="js/components/data-table.js"></script>
-    <script src="js/components/ai-panel.js"></script>
+    <script src="js/components/completion-celebration.js"></script>
+    <script src="js/components/quality-material-drawer.js"></script>
     <script src="js/modules/counselor.js"></script>
     <script src="js/modules/gpa.js"></script>
     <script src="js/modules/moral.js"></script>
     <script src="js/modules/quality.js"></script>
     <script src="js/modules/comprehensive.js"></script>
+    <script src="js/modules/toolbox.js"></script>
+    <script src="js/emoji-replace.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>

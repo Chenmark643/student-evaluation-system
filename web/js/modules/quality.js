@@ -11,8 +11,13 @@ let qualityData = {};
 let qualityCurrentSid = '';
 let qualityCurrentClass = '';
 let qualityThresholds = [];
-let qualityMode = 'auto';
+let qualityMode = localStorage.getItem('quality_preferred_mode') || 'import';
 let qualitySemiParsed = null;
+
+// V10: Batch bonus state
+let qualityBatchTargets = new Set();
+let qualityBatchSearchTerm = '';
+let qualityBatchClassFilter = '';
 
 // V9.0: Material Import state
 let qualityImportTree = null;
@@ -26,7 +31,8 @@ let qualityViewerStudent = null;
 let qualityImportRosterMap = {};
 
 const QUALITY_DEFAULT_THRESHOLD_NAMES = new Set([
-    '社会实践类上限', '学生工作类上限', '技能证书类上限',
+    '比赛志愿服务每学期上限', '学院活动参与每学期上限', '寒暑假社会实践上限',
+    '技能培训与证书上限', '学生干部任职取最高', '新生班主任助理取最高',
 ]);
 
 // ============================================================
@@ -36,16 +42,16 @@ async function renderModuleQuality() {
     document.getElementById('module-title').textContent = '素质拓展分计算';
     const c = document.getElementById('module-container');
     c.innerHTML = `
-        <div class="module-section" style="display:flex;align-items:center;justify-content:space-between;">
-            <h2 style="margin:0;"><span class="step-badge">1</span> 导入花名册</h2>
-            <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:11px;color:var(--text-muted);">模式:</span>
-                <button class="btn btn-sm ${qualityMode==='auto'?'btn-teal':'btn-ghost'}" onclick="qualitySwitchMode('auto')" style="padding:4px 12px;font-size:11px;">🤖 自动计算</button>
-                <button class="btn btn-sm ${qualityMode==='manual'?'btn-teal':'btn-ghost'}" onclick="qualitySwitchMode('manual')" style="padding:4px 12px;font-size:11px;">✋ 辅助人工</button>
-                <button class="btn btn-sm ${qualityMode==='import'?'btn-teal':'btn-ghost'}" onclick="qualitySwitchMode('import')" style="padding:4px 12px;font-size:11px;">📦 材料导入</button>
+        <div class="quality-workspace-head">
+            <div><p>素质拓展工作台</p><h2>${qualityMode==='import'?'材料导入与加分':qualityMode==='auto'?'快速录入加分':'表格辅助汇总'}</h2><span>${qualityMode==='import'?'整理学生材料、逐项核验并完成加分':'选择适合当前工作的处理方式'}</span></div>
+            <div class="quality-mode-switch" role="tablist" aria-label="素拓处理模式">
+                <button class="${qualityMode==='import'?'active':''}" onclick="qualitySwitchMode('import')" role="tab" aria-selected="${qualityMode==='import'}"><b>材料导入</b><small>最常使用</small></button>
+                <button class="${qualityMode==='auto'?'active':''}" onclick="qualitySwitchMode('auto')" role="tab" aria-selected="${qualityMode==='auto'}"><b>快速录入</b><small>逐人加分</small></button>
+                <button class="${qualityMode==='manual'?'active':''}" onclick="qualitySwitchMode('manual')" role="tab" aria-selected="${qualityMode==='manual'}"><b>表格汇总</b><small>半成品表</small></button>
             </div>
         </div>
-        <div class="module-section">
+        <div class="module-section quality-roster-card">
+            <div class="quality-section-title"><span>01</span><div><h2>导入学生名单</h2><p>使用学分绩点表建立班级与学生对应关系</p></div></div>
             <div class="file-picker-row">
                 <input id="quality-roster-file" class="file-path" readonly placeholder="选择学分绩点.xlsx 导入班级和学生...">
                 <button class="btn btn-secondary" onclick="pickFile('quality-roster-file','选择学分绩点文件',[['Excel文件','*.xlsx']])">浏览</button>
@@ -73,13 +79,11 @@ async function renderModuleQuality() {
                 </div>
                 <div id="quality-thresholds-container" class="form-row" style="flex-wrap:wrap;gap:8px;"></div>
             </div>
-            <div style="margin-top:8px;"><button class="btn btn-ghost btn-sm" onclick="qualityAskAI()">🤖 AI助手</button></div>
             <div id="quality-current-view" style="margin-top:12px;font-size:12px;color:var(--text-muted);">请先选择班级和学生</div>
         </div>
         `: qualityMode==='import'?`
-        <div class="module-section" id="quality-import-step2">
-            <h2><span class="step-badge">2</span> 选择班级压缩包</h2>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">💡 选择各班班长发来的ZIP压缩包，系统自动识别班级和学生姓名并解压归档。</p>
+        <div class="module-section quality-import-hero" id="quality-import-step2">
+            <div class="quality-section-title"><span>02</span><div><h2>导入班级材料</h2><p>选择各班提交的 ZIP，系统自动识别班级和学生并归档</p></div><em>高频</em></div>
             <div class="file-picker-row" style="margin-bottom:8px;">
                 <input id="quality-import-zip-display" class="file-path" readonly placeholder="选择班级压缩包(.zip)... 可多选">
                 <button class="btn btn-secondary" onclick="qualityImportPickZips()">📁 浏览选择</button>
@@ -123,6 +127,48 @@ async function renderModuleQuality() {
             <button class="btn btn-ghost btn-sm" id="quality-import-delete-btn" onclick="qualityImportDelete()" disabled>🗑️ 删除</button>
             <button class="btn btn-ghost btn-sm" id="quality-import-done-btn" onclick="qualityImportMarkDone()" disabled>✅ 完成</button>
             <button class="btn btn-ghost btn-sm" id="quality-import-pending-btn" onclick="qualityImportMarkPending()" disabled>⬜ 待办</button>
+        </div>
+        <div class="module-section" id="quality-batch-section" style="display:none;">
+            <h2>📋 批量加分</h2>
+            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">选择一个已有加分项目，搜索并多选目标学生，预览后一键批量同步（沿用现有上限规则校验）。</p>
+            <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px;">
+                <div style="font-size:11px;font-weight:600;margin-bottom:6px;">① 选择/填写加分项目</div>
+                <div class="form-row" style="flex-wrap:wrap;gap:8px;">
+                    <div class="form-group"><label>加分项目</label><input id="qb-activity" class="input" style="width:200px;" placeholder="输入名称或从列表选择" list="qb-datalist" oninput="qualityBatchOnActivityInput()"><datalist id="qb-datalist"></datalist></div>
+                    <div class="form-group"><label>类别</label><select id="qb-cat" class="select-input" style="width:120px;" onchange="qualityBatchOnCat()"></select></div>
+                    <div class="form-group"><label>等级</label><select id="qb-grade" class="select-input" style="width:100px;"></select></div>
+                    <div class="form-group"><label>分数</label><input id="qb-score" class="input" type="number" style="width:70px;" placeholder="0" step="0.5" min="0"></div>
+                </div>
+            </div>
+            <div style="display:flex;gap:12px;margin-bottom:12px;">
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:600;margin-bottom:6px;">② 搜索并多选学生</div>
+                    <div class="form-row" style="margin-bottom:6px;gap:8px;flex-wrap:wrap;">
+                        <div class="form-group"><label>班级筛选</label><select id="qb-class-filter" class="select-input" style="width:130px;" onchange="qualityBatchFilterClass()"><option value="">全部班级</option></select></div>
+                        <div class="form-group"><label>搜索</label><input id="qb-search" class="input" style="width:160px;" placeholder="姓名/学号..." oninput="qualityBatchSearch()"></div>
+                        <button class="btn btn-ghost btn-sm" style="align-self:flex-end;font-size:10px;" onclick="qualityBatchSelectAllVisible()">全选可见</button>
+                        <button class="btn btn-ghost btn-sm" style="align-self:flex-end;font-size:10px;" onclick="qualityBatchClearSelection()">清空选择</button>
+                    </div>
+                    <div id="qb-student-list" style="max-height:40vh;overflow-y:auto;background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:8px;">
+                        <p style="color:var(--text-muted);text-align:center;padding:12px;">请先导入花名册</p>
+                    </div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" id="qb-selection-count">已选择 0 名学生</div>
+                </div>
+                <div style="flex:1;min-width:0;background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:10px;">
+                    <div style="font-size:11px;font-weight:600;margin-bottom:6px;">③ 预览并确认</div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                        <span style="font-size:10px;color:var(--text-muted);">设置项目和选择学生后刷新</span>
+                        <div style="display:flex;gap:4px;">
+                            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px;" onclick="qualityBatchDeselectDups()">去重</button>
+                            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px;" onclick="qualityBatchRefreshPreview()">刷新预览</button>
+                        </div>
+                    </div>
+                    <div id="qb-preview" style="max-height:35vh;overflow-y:auto;font-size:11px;">
+                        <p style="color:var(--text-muted);text-align:center;padding:12px;">设置加分项目并选择学生后点击刷新预览</p>
+                    </div>
+                    <button class="btn btn-primary" style="width:100%;margin-top:10px;" id="qb-execute-btn" onclick="qualityBatchExecute()" disabled>📋 批量添加 (+0 人)</button>
+                </div>
+            </div>
         </div>
         `:`
         <div class="module-section" id="quality-manual-section">
@@ -182,6 +228,9 @@ async function renderModuleQuality() {
         }
         if (qualityImportTree) { qualityImportRenderTree(); const ts = document.getElementById('quality-import-tree-section'); if (ts) ts.style.display = 'block'; }
         qualityImportUpdateButtons();
+        // Show batch section and init
+        const bs = document.getElementById('quality-batch-section'); if (bs) bs.style.display = 'block';
+        qualityBatchInitUI(); qualityBatchRenderStudentList();
     } else {
         if (Object.keys(qualityRoster).length > 0) {
             setTimeout(() => {
@@ -215,6 +264,7 @@ async function qualityImportRoster() {
             document.getElementById('quality-roster-status').textContent = `已导入 ${Object.keys(result).length} 名学生, ${qualityClassOrder.length} 个班级`;
             if (qualityMode === 'manual') qualityManualRenderList();
             if (qualityMode === 'import' && qualityImportTree) { const ts = document.getElementById('quality-import-tree-section'); if (ts) ts.style.display = 'block'; }
+            if (qualityMode === 'import') { const bs = document.getElementById('quality-batch-section'); if (bs) bs.style.display = 'block'; qualityBatchTargets = new Set(); qualityBatchInitUI(); qualityBatchRenderStudentList(); }
             showToast('花名册导入成功', 'success');
         }
     } catch(e) { showToast('导入失败: ' + e, 'error'); }
@@ -254,6 +304,11 @@ function qualityAdd() {
     if (!activity) { showToast('请输入项目名称', 'warning'); return; }
     if (!category) { showToast('请选择类别', 'warning'); return; }
     if (score <= 0) { showToast('请输入有效分数', 'warning'); return; }
+    // Duplicate check
+    const existing = qualityData[qualityCurrentSid] || [];
+    const isDup = existing.some(a => a.activity === activity && a.category === category && (a.grade||'') === grade && a.score === score);
+    if (isDup) { showToast('⚠️ 该学生已有相同的加分项，请勿重复添加', 'warning'); return; }
+
     if (!qualityData[qualityCurrentSid]) qualityData[qualityCurrentSid] = [];
     qualityData[qualityCurrentSid].push({ activity, category, grade, score });
     eel.save_activity_mapping(activity, category, grade, score)();
@@ -365,9 +420,11 @@ async function qualityExport() {
     const outPath = outputDir + '/素拓分.xlsx';
     const thDict = {}; qualityThresholds.forEach(th => { thDict[th.name] = {max: th.max, categories: th.categories, mode: th.mode || 'sum'}; });
     try {
-        const result = await eel.export_quality_with_roster(qualityRoster, qualityData, outPath, thDict)();
+        if (!MajorScope.requireForExport()) return;
+        const result = await eel.export_quality_with_roster(qualityRoster, qualityData, outPath, thDict, MajorScope.get())();
         if (result.success) {
             document.getElementById('quality-result-area').innerHTML = `<div class="result-card"><div class="result-stat"><div class="stat-value">${result.student_count}</div><div class="stat-label">学生</div></div><div class="result-stat"><div class="stat-value">${result.class_count}</div><div class="stat-label">班级</div></div><div class="result-actions"><button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output.replace(/\\/g,'\\\\')}')()">📂 打开文件</button></div></div>`;
+            CompletionCelebration.mark('quality', result.output);
             showOutputDialog(true, `成功导出 ${result.student_count} 名学生的素拓分数`, [result.output]);
         } else { showOutputDialog(false, result.error || '导出失败'); }
     } catch(e) { showOutputDialog(false, '处理出错: ' + e); }
@@ -441,7 +498,7 @@ async function qualitySyncCategories() { try { const cats = await eel.get_qualit
 // ============================================================
 function qualitySwitchMode(mode) {
     if (mode !== qualityMode) { for (const sid of Object.keys(qualityData)) { qualityData[sid] = (qualityData[sid] || []).filter(a => !a._manual); if (!qualityData[sid] || qualityData[sid].length === 0) delete qualityData[sid]; } qualitySemiParsed = null; }
-    qualityMode = mode; renderModuleQuality();
+    qualityMode = mode; localStorage.setItem('quality_preferred_mode', mode); renderModuleQuality();
     setTimeout(() => {
         if (Object.keys(qualityRoster).length > 0) {
             const secId = mode==='auto'?'quality-entry-section':mode==='import'?'quality-import-step2':'quality-manual-section';
@@ -661,23 +718,82 @@ async function qualityImportOpenViewer() {
         fileListEl.innerHTML = html;
     }
     document.getElementById('material-file-preview').innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;">👈 选择左侧文件查看</p>';
-    // Scoring form
-    let cats = ['文艺活动类','体育类','A类竞赛','B类竞赛','C类竞赛','D类竞赛','学术论文','非学术文章','专利软著','学生工作','荣誉称号','社会实践','技能培训','其他加分'];
-    try { const sc = await eel.get_quality_categories()(); if (sc && sc.length) cats = sc; } catch(e) {}
-    let mappingNames = []; try { const m = await eel.load_activity_mappings_json()(); mappingNames = Object.keys(m||{}); } catch(e) {}
-    const sf = document.getElementById('material-scoring-form');
-    sf.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><h4 style="font-size:12px;margin:0;">加分判定</h4><div style="display:flex;gap:4px;"><button class="btn btn-ghost btn-sm" onclick="qualityManageMappings()" style="font-size:10px;padding:2px 6px;">📋 项目</button><button class="btn btn-ghost btn-sm" onclick="qualityManageCategories()" style="font-size:10px;padding:2px 6px;">🏷️ 类别</button><button class="btn btn-ghost btn-sm" onclick="qualityImportShowThresholds()" style="font-size:10px;padding:2px 6px;">⚠️ 上限</button></div></div>
-    <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:8px;margin-bottom:8px;"><div class="form-group" style="margin-bottom:4px;"><label style="font-size:10px;">加分项目</label><input id="mv-activity" class="input" style="width:100%;font-size:11px;" placeholder="输入名称" list="mv-datalist" oninput="qualityImportOnActivityInput()"><datalist id="mv-datalist">${mappingNames.map(n => `<option value="${escapeHtml(n)}">`).join('')}</datalist></div>
-    <div style="display:flex;gap:6px;"><div class="form-group" style="flex:1;margin-bottom:4px;"><label style="font-size:10px;">类别</label><select id="mv-cat" class="select-input" style="width:100%;font-size:11px;" onchange="qualityImportOnViewerCat()"><option value="">-- 类别 --</option>${cats.map(c => `<option value="${c}">${c}</option>`).join('')}</select></div>
-    <div class="form-group" style="flex:1;margin-bottom:4px;"><label style="font-size:10px;">等级</label><select id="mv-grade" class="select-input" style="width:100%;font-size:11px;"><option value="">-- 等级 --</option></select></div>
-    <div class="form-group" style="width:60px;margin-bottom:4px;"><label style="font-size:10px;">分数</label><input id="mv-score" class="input" type="number" style="width:100%;font-size:11px;" placeholder="0" step="0.5" min="0"></div></div>
-    <button class="btn btn-teal btn-sm" style="width:100%;margin-top:4px;" onclick="qualityImportAddScore()">+ 添加加分项</button></div><div id="mv-thresholds-mini" style="margin-bottom:8px;font-size:10px;color:var(--text-muted);"></div>`;
-    qualityImportRenderThresholdMini();
-    qualityImportRenderViewerScores();
+    let cats = [];
+    try { cats = await eel.get_quality_categories()() || []; } catch(e) {}
+    const sid = qualityImportRosterMap[studentData.key] || studentData.id || studentData.key;
+    const students = [];
+    for (const cls of (qualityImportTree?.classes || [])) {
+        for (const student of (cls.students || [])) {
+            const studentSid = qualityImportRosterMap[student.key] || student.id || student.key;
+            students.push({
+                key: student.key, id: student.id, name: student.name, className: cls.name,
+                fileCount: (student.files || []).length,
+                scoreCount: (qualityData[studentSid] || []).length,
+                status: qualityImportProgress[student.key] || 'pending',
+            });
+        }
+    }
+    await QualityMaterialDrawer.mount({
+        root: document.getElementById('quality-score-drawer'), categories: cats,
+        onStudentChange: qualityImportOpenStudentFromDrawer,
+        onAdd: qualityImportAddDrawerScore,
+        onRemove: qualityImportRemoveDrawerScore,
+    });
+    QualityMaterialDrawer.setStudents(students, studentData.key);
+    QualityMaterialDrawer.setThresholds(qualityThresholds);
+    QualityMaterialDrawer.setStudent(studentData, qualityData[sid] || []);
+    QualityMaterialDrawer.setFiles(studentFiles);
+    QualityMaterialDrawer.open();
     overlay.classList.remove('hidden');
 }
 
-function closeMaterialViewer() { document.getElementById('material-viewer-overlay').classList.add('hidden'); qualityViewerStudent = null; if (qualityImportTree) { qualityImportRenderTree(); qualityImportUpdateProgressBar(); } }
+function qualityImportOpenStudentFromDrawer(studentKey) {
+    for (const cls of (qualityImportTree?.classes || [])) {
+        const student = (cls.students || []).find(s => s.key === studentKey);
+        if (student) {
+            qualityImportSelectedClass = cls.name;
+            qualityImportSelectedStudent = student.key;
+            qualityImportOpenViewer();
+            return;
+        }
+    }
+}
+
+function qualityImportAddDrawerScore(entry) {
+    const sd = qualityViewerStudent; if (!sd) return;
+    const sid = qualityImportRosterMap[sd.key] || sd.id || sd.key;
+    if (!qualityData[sid]) qualityData[sid] = [];
+    qualityData[sid].push(entry);
+    eel.save_activity_mapping(entry.activity, entry.category, entry.grade, entry.base_score)();
+    _qualityImportAutoSave(); qualityImportRenderTree();
+    showToast(`已添加：${entry.activity} +${Number(entry.score).toFixed(2)}分`, 'success');
+}
+
+function qualityImportRemoveDrawerScore(index) {
+    const sd = qualityViewerStudent; if (!sd) return;
+    const sid = qualityImportRosterMap[sd.key] || sd.id || sd.key;
+    if (qualityData[sid]) qualityData[sid].splice(index, 1);
+    QualityMaterialDrawer.setStudent(sd, qualityData[sid] || []);
+    _qualityImportAutoSave(); qualityImportRenderTree();
+}
+
+function qualityImportCompleteCurrentFromDrawer() {
+    const current = qualityViewerStudent; if (!current) return;
+    qualityImportMarkAllFiles(current.key, 'done');
+    const all = [];
+    for (const cls of (qualityImportTree?.classes || [])) for (const student of (cls.students || [])) all.push({cls, student});
+    const currentIndex = all.findIndex(row => row.student.key === current.key);
+    const ordered = all.slice(currentIndex + 1).concat(all.slice(0, currentIndex + 1));
+    const next = ordered.find(row => (qualityImportProgress[row.student.key] || 'pending') !== 'done');
+    if (next) {
+        qualityImportSelectedClass = next.cls.name; qualityImportSelectedStudent = next.student.key;
+        qualityImportOpenViewer(); showToast('已完成，继续审核下一名学生', 'success');
+    } else {
+        closeMaterialViewer(); showToast('本批学生材料已全部审核完成', 'success');
+    }
+}
+
+function closeMaterialViewer() { QualityMaterialDrawer.close(); document.getElementById('material-viewer-overlay').classList.add('hidden'); qualityViewerStudent = null; if (qualityImportTree) { qualityImportRenderTree(); qualityImportUpdateProgressBar(); } }
 
 function qualityImportRenderThresholdMini() {
     const el = document.getElementById('mv-thresholds-mini'); if (!el) return;
@@ -718,7 +834,7 @@ function qualityImportRenderViewerScores() {
 
 async function qualityImportOnViewerCat() { const cat = document.getElementById('mv-cat').value, sel = document.getElementById('mv-grade'); sel.innerHTML='<option value="">-- 选择等级 --</option>'; if(cat){try{const grades=await eel.get_quality_grades(cat)();grades.forEach(g=>{const o=document.createElement('option');o.value=g;o.textContent=g;sel.appendChild(o);});}catch(e){}} }
 
-async function qualityImportAddScore() { const sd=qualityViewerStudent; if(!sd)return; const activity=document.getElementById('mv-activity').value.trim(),category=document.getElementById('mv-cat').value,grade=document.getElementById('mv-grade').value,score=parseFloat(document.getElementById('mv-score').value)||0; if(!activity){showToast('请输入项目名称','warning');return;} if(!category){showToast('请选择类别','warning');return;} if(score<=0){showToast('请输入有效分数','warning');return;} const sid=qualityImportRosterMap[sd.key]||sd.id||sd.key; if(!qualityData[sid])qualityData[sid]=[]; qualityData[sid].push({activity,category,grade,score}); eel.save_activity_mapping(activity,category,grade,score)(); document.getElementById('mv-activity').value='';document.getElementById('mv-score').value='';qualityImportRenderViewerScores();_qualityImportAutoSave();showToast(`已添加: ${activity} +${score}分`,'success'); }
+async function qualityImportAddScore() { const sd=qualityViewerStudent; if(!sd)return; const activity=document.getElementById('mv-activity').value.trim(),category=document.getElementById('mv-cat').value,grade=document.getElementById('mv-grade').value,score=parseFloat(document.getElementById('mv-score').value)||0; if(!activity){showToast('请输入项目名称','warning');return;} if(!category){showToast('请选择类别','warning');return;} if(score<=0){showToast('请输入有效分数','warning');return;} const sid=qualityImportRosterMap[sd.key]||sd.id||sd.key; const existing=(qualityData[sid]||[]); if(existing.some(a=>a.activity===activity&&a.category===category&&(a.grade||'')===grade&&a.score===score)){showToast('⚠️ 该学生已有相同的加分项，请勿重复添加','warning');return;} if(!qualityData[sid])qualityData[sid]=[]; qualityData[sid].push({activity,category,grade,score}); eel.save_activity_mapping(activity,category,grade,score)(); document.getElementById('mv-activity').value='';document.getElementById('mv-score').value='';qualityImportRenderViewerScores();_qualityImportAutoSave();showToast('已添加: '+activity+' +'+score+'分','success'); }
 function qualityImportRemoveScore(sid,index){if(qualityData[sid]){qualityData[sid].splice(index,1);if(qualityData[sid].length===0)delete qualityData[sid];}qualityImportRenderViewerScores();_qualityImportAutoSave();}
 
 async function _qualityImportAutoSave(){if(!qualityImportBaseDir)return;try{await eel.save_quality_data_snapshot(qualityImportBaseDir,qualityData)();}catch(e){console.error(e);}}
@@ -878,4 +994,296 @@ async function qualityImportOpenFolder(){
     const restored=await _qualityImportRestoreData();if(Object.keys(qualityRoster).length>0)qualityImportMatchRoster();
     qualityImportRenderTree();qualityImportUpdateProgressBar();showToast(`已加载: ${result.classes.length} 个班级`+(restored>0?`，恢复 ${restored} 人评分数据`:''),'success');
     }catch(e){showToast('加载失败: '+e,'error');}
+}
+
+// ============================================================
+// Batch Bonus (批量加分)
+// ============================================================
+
+function qualityBatchInitUI() {
+    const sel = document.getElementById('qb-class-filter');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">全部班级</option>';
+    qualityClassOrder.forEach(cls => {
+        const o = document.createElement('option');
+        o.value = cls; o.textContent = cls;
+        if (cls === qualityBatchClassFilter) o.selected = true;
+        sel.appendChild(o);
+    });
+}
+
+function qualityBatchRenderStudentList() {
+    const container = document.getElementById('qb-student-list');
+    if (!container) return;
+    if (Object.keys(qualityRoster).length === 0) {
+        container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:12px;">请先导入花名册</p>';
+        return;
+    }
+    const term = (qualityBatchSearchTerm || '').toLowerCase();
+    const classFilter = qualityBatchClassFilter || '';
+    const grouped = {};
+    for (const [sid, info] of Object.entries(qualityRoster)) {
+        if (classFilter && info.class !== classFilter) continue;
+        if (term && !info.name.toLowerCase().includes(term) && !sid.toLowerCase().includes(term)) continue;
+        if (!grouped[info.class]) grouped[info.class] = [];
+        grouped[info.class].push({ sid, name: info.name });
+    }
+    const sortedClasses = Object.keys(grouped).sort();
+    let html = '';
+    let totalVisible = 0;
+    if (sortedClasses.length === 0) {
+        html = '<p style="color:var(--text-muted);text-align:center;padding:12px;">无匹配学生</p>';
+    } else {
+        sortedClasses.forEach(cls => {
+            const students = grouped[cls];
+            totalVisible += students.length;
+            const allSelected = students.every(s => qualityBatchTargets.has(s.sid));
+            const someSelected = students.some(s => qualityBatchTargets.has(s.sid));
+            const selectedCount = students.filter(s => qualityBatchTargets.has(s.sid)).length;
+            html += '<div style="margin-bottom:2px;">';
+            html += '<div style="display:flex;align-items:center;padding:4px 8px;background:var(--bg-secondary);border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;" onclick="qualityBatchToggleClass(\'' + escapeHtml(cls).replace(/'/g,"\\'") + '\')">';
+            html += '<span style="margin-right:6px;">' + (allSelected ? '☑' : someSelected ? '◐' : '☐') + '</span>';
+            html += '<span>' + escapeHtml(cls) + '</span>';
+            html += '<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">' + selectedCount + '/' + students.length + '</span>';
+            html += '</div>';
+            students.forEach(s => {
+                html += '<div style="display:flex;align-items:center;padding:3px 8px 3px 28px;cursor:pointer;font-size:11px;' + (qualityBatchTargets.has(s.sid) ? 'background:var(--accent-primary-muted);border-radius:4px;' : '') + '" onclick="qualityBatchToggleStudent(\'' + s.sid.replace(/'/g,"\\'") + '\')">';
+                html += '<span style="margin-right:6px;">' + (qualityBatchTargets.has(s.sid) ? '☑' : '☐') + '</span>';
+                html += '<span>' + escapeHtml(s.name) + '</span>';
+                html += '<span style="margin-left:auto;font-size:9px;color:var(--text-muted);">' + escapeHtml(s.sid) + '</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        });
+    }
+    container.innerHTML = html;
+    document.getElementById('qb-selection-count').textContent = '已选择 ' + qualityBatchTargets.size + ' 名学生 (可见 ' + totalVisible + ')';
+}
+
+function qualityBatchToggleStudent(sid) {
+    if (qualityBatchTargets.has(sid)) { qualityBatchTargets.delete(sid); }
+    else { qualityBatchTargets.add(sid); }
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchToggleClass(cls) {
+    const term = (qualityBatchSearchTerm || '').toLowerCase();
+    const students = [];
+    for (const [sid, info] of Object.entries(qualityRoster)) {
+        if (info.class !== cls) continue;
+        if (term && !info.name.toLowerCase().includes(term) && !sid.toLowerCase().includes(term)) continue;
+        students.push(sid);
+    }
+    if (students.length === 0) return;
+    const allSelected = students.every(s => qualityBatchTargets.has(s));
+    if (allSelected) { students.forEach(s => qualityBatchTargets.delete(s)); }
+    else { students.forEach(s => qualityBatchTargets.add(s)); }
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchSearch() {
+    qualityBatchSearchTerm = document.getElementById('qb-search') ? document.getElementById('qb-search').value : '';
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchFilterClass() {
+    qualityBatchClassFilter = document.getElementById('qb-class-filter') ? document.getElementById('qb-class-filter').value : '';
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchSelectAllVisible() {
+    const term = (qualityBatchSearchTerm || '').toLowerCase();
+    const classFilter = qualityBatchClassFilter || '';
+    for (const [sid, info] of Object.entries(qualityRoster)) {
+        if (classFilter && info.class !== classFilter) continue;
+        if (term && !info.name.toLowerCase().includes(term) && !sid.toLowerCase().includes(term)) continue;
+        qualityBatchTargets.add(sid);
+    }
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchClearSelection() {
+    qualityBatchTargets = new Set();
+    qualityBatchRenderStudentList();
+}
+
+async function qualityBatchOnActivityInput() {
+    const a = document.getElementById('qb-activity').value.trim();
+    if (!a) return;
+    try {
+        const s = await eel.get_activity_suggestions(a)();
+        if (s && s.category) {
+            document.getElementById('qb-cat').value = s.category;
+            await qualityBatchOnCat();
+            setTimeout(function() {
+                if (s.default_grade) document.getElementById('qb-grade').value = s.default_grade;
+                if (s.default_score) document.getElementById('qb-score').value = s.default_score;
+            }, 100);
+        }
+    } catch(e) {}
+}
+
+async function qualityBatchOnCat() {
+    const cat = document.getElementById('qb-cat').value;
+    const sel = document.getElementById('qb-grade');
+    sel.innerHTML = '<option value="">-- 等级 --</option>';
+    if (cat) {
+        try {
+            const grades = await eel.get_quality_grades(cat)();
+            grades.forEach(function(g) { const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o); });
+        } catch(e) {}
+    }
+}
+
+function qualityBatchGatherInput() {
+    const activityEl = document.getElementById('qb-activity');
+    const catEl = document.getElementById('qb-cat');
+    const gradeEl = document.getElementById('qb-grade');
+    const scoreEl = document.getElementById('qb-score');
+    const activity = activityEl ? activityEl.value.trim() : '';
+    const category = catEl ? catEl.value : '';
+    const grade = gradeEl ? gradeEl.value : '';
+    const score = scoreEl ? (parseFloat(scoreEl.value) || 0) : 0;
+    if (!activity) { showToast('请输入加分项目名称', 'warning'); return null; }
+    if (!category) { showToast('请选择类别', 'warning'); return null; }
+    if (score <= 0) { showToast('请输入有效分数', 'warning'); return null; }
+    return { activity: activity, category: category, grade: grade, score: score };
+}
+
+function qualityBatchRefreshPreview() {
+    const input = qualityBatchGatherInput();
+    const container = document.getElementById('qb-preview');
+    const btn = document.getElementById('qb-execute-btn');
+    if (!container) return;
+
+    if (!input || qualityBatchTargets.size === 0) {
+        container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:12px;">设置加分项目并选择学生后点击刷新预览</p>';
+        if (btn) { btn.disabled = true; btn.textContent = '📋 批量添加 (+0 人)'; }
+        return;
+    }
+
+    let willAdd = 0, dupCount = 0, cappedCount = 0;
+    const previewRows = [];
+
+    qualityBatchTargets.forEach(function(sid) {
+        const info = qualityRoster[sid];
+        if (!info) return;
+        const existing = qualityData[sid] || [];
+
+        const isDup = existing.some(function(a) {
+            return a.activity === input.activity &&
+                a.category === input.category &&
+                (a.grade || '') === input.grade &&
+                a.score === input.score;
+        });
+
+        if (isDup) {
+            dupCount++;
+            previewRows.push({ sid: sid, name: info.name, cls: info.class, existingItems: existing.length, willAdd: false, dup: true, capped: false, capNote: '', newTotal: null });
+            return;
+        }
+
+        const simulated = existing.concat([{ activity: input.activity, category: input.category, grade: input.grade, score: input.score }]);
+        const catTotals = {};
+        simulated.forEach(function(a) { catTotals[a.category] = (catTotals[a.category] || 0) + a.score; });
+        const thResult = _qualityApplyThresholds(catTotals, simulated);
+        const totalDeduction = thResult.totalDeduction;
+        const capNotes = thResult.capNotes;
+        const rawTotal = Object.values(catTotals).reduce(function(a, b) { return a + b; }, 0);
+        const newTotal = Math.max(0, rawTotal - totalDeduction);
+        const isCapped = totalDeduction > 0;
+
+        if (isCapped) cappedCount++;
+        willAdd++;
+        previewRows.push({ sid: sid, name: info.name, cls: info.class, existingItems: existing.length, willAdd: true, dup: false, capped: isCapped, capNote: capNotes.join('; '), newTotal: newTotal });
+    });
+
+    let html = '';
+    if (previewRows.length === 0) {
+        html = '<p style="color:var(--text-muted);text-align:center;padding:12px;">无数据</p>';
+    } else {
+        html += '<div style="margin-bottom:6px;font-size:10px;display:flex;gap:12px;flex-wrap:wrap;">';
+        html += '<span style="color:var(--color-success);">✅ 将添加: <strong>' + willAdd + '</strong> 人</span>';
+        if (dupCount > 0) html += '<span style="color:var(--text-muted);">⏭️ 跳过(重复): <strong>' + dupCount + '</strong> 人</span>';
+        if (cappedCount > 0) html += '<span style="color:var(--color-warning);">⚠️ 触及上限: <strong>' + cappedCount + '</strong> 人</span>';
+        html += '</div>';
+        html += '<table class="data-table" style="font-size:10px;"><thead><tr><th>姓名</th><th>班级</th><th>已有</th><th>操作</th><th>新总分</th><th>备注</th></tr></thead><tbody>';
+        previewRows.forEach(function(r) {
+            const opIcon = r.dup ? '⏭️' : r.capped ? '⚠️' : '✅';
+            const opText = r.dup ? '跳过(重复)' : r.capped ? '加(触上限)' : '添加';
+            const opColor = r.dup ? 'var(--text-muted)' : r.capped ? 'var(--color-warning)' : 'var(--color-success)';
+            const totalDisplay = r.newTotal !== null ? r.newTotal.toFixed(1) : '—';
+            const remark = r.dup ? '已有相同加分项' : (r.capNote || '');
+            html += '<tr>';
+            html += '<td>' + escapeHtml(r.name) + '</td>';
+            html += '<td>' + escapeHtml(r.cls) + '</td>';
+            html += '<td>' + r.existingItems + '项</td>';
+            html += '<td style="color:' + opColor + ';">' + opIcon + ' ' + opText + '</td>';
+            html += '<td style="font-weight:600;">' + totalDisplay + '</td>';
+            html += '<td style="font-size:9px;color:var(--text-muted);">' + escapeHtml(remark) + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+    }
+
+    container.innerHTML = html;
+    if (btn) {
+        btn.disabled = willAdd === 0;
+        btn.textContent = '📋 批量添加 (+' + willAdd + ' 人)' + (dupCount > 0 ? ', 跳过 ' + dupCount : '');
+    }
+}
+
+async function qualityBatchExecute() {
+    const input = qualityBatchGatherInput();
+    if (!input) return;
+    if (qualityBatchTargets.size === 0) { showToast('请先选择目标学生', 'warning'); return; }
+
+    let added = 0, skipped = 0;
+    qualityBatchTargets.forEach(function(sid) {
+        const existing = qualityData[sid] || [];
+        const isDup = existing.some(function(a) {
+            return a.activity === input.activity &&
+                a.category === input.category &&
+                (a.grade || '') === input.grade &&
+                a.score === input.score;
+        });
+        if (isDup) { skipped++; return; }
+
+        if (!qualityData[sid]) qualityData[sid] = [];
+        qualityData[sid].push({ activity: input.activity, category: input.category, grade: input.grade, score: input.score });
+        added++;
+    });
+
+    eel.save_activity_mapping(input.activity, input.category, input.grade, input.score)();
+
+    let msg = '批量加分完成: 添加 ' + added + ' 人';
+    if (skipped > 0) msg += ', 跳过 ' + skipped + ' 人 (重复)';
+    showToast(msg, added > 0 ? 'success' : 'info');
+
+    qualityBatchTargets = new Set();
+    qualityBatchRenderStudentList();
+    qualityBatchRefreshPreview();
+    document.getElementById('qb-activity').value = '';
+    document.getElementById('qb-score').value = '';
+    document.getElementById('qb-grade').innerHTML = '<option value="">-- 等级 --</option>';
+}
+
+function qualityBatchDeselectDups() {
+    const input = qualityBatchGatherInput();
+    if (!input) return;
+    let removed = 0;
+    qualityBatchTargets.forEach(function(sid) {
+        const existing = qualityData[sid] || [];
+        const isDup = existing.some(function(a) {
+            return a.activity === input.activity &&
+                a.category === input.category &&
+                (a.grade || '') === input.grade &&
+                a.score === input.score;
+        });
+        if (isDup) { qualityBatchTargets.delete(sid); removed++; }
+    });
+    qualityBatchRenderStudentList();
+    qualityBatchRefreshPreview();
+    if (removed > 0) showToast('已取消选择 ' + removed + ' 名已有重复项的学生', 'info');
+    else showToast('没有重复学生', 'info');
 }
