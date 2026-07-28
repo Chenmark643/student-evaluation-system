@@ -26,7 +26,7 @@ for candidate in ['logo.icns', 'logo.png', '../logo.png']:
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=[('vendor/kdocs-cli', '.')],
     datas=[
         ('web', 'web'),
         ('config.py', '.'),

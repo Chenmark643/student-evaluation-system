@@ -6,24 +6,15 @@ on:
       version:
         description: "版本号（留空则使用 config.py）"
         required: false
-        default: "14.0.2"
+        default: "14.0.3"
   push:
     branches: [main, master, "macos-*"]
     tags: ["v*"]
 
 jobs:
   build-mac:
-    name: macOS ${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x86_64
-            runner: macos-15-intel
-
-    runs-on: ${{ matrix.runner }}
+    name: macOS arm64
+    runs-on: macos-15
     permissions:
       contents: write
 
@@ -52,7 +43,23 @@ jobs:
           print("DesktopApi:", DesktopApi.__name__)
           print("moral engine:", build_moral_preview.__name__)
           PY
-          test "$(uname -m)" = "${{ matrix.arch }}"
+          test "$(uname -m)" = "arm64"
+
+      - name: 下载并校验金山文档 CLI
+        env:
+          KDOCS_CLI_VERSION: "2.5.14"
+          KDOCS_CLI_SHA256: "eff9ac66c208dbed3c5e06ea1aa49fa61c5d98b77f8349519af9b8637806b7a0"
+        run: |
+          mkdir -p vendor .kdocs-download
+          ARCHIVE="kdocs-cli-${KDOCS_CLI_VERSION}-darwin-arm64.tar.gz"
+          URL="https://wpsai.wpscdn.cn/skillhub/pro/v${KDOCS_CLI_VERSION}/releases/${ARCHIVE}"
+          curl --fail --location --retry 3 --output ".kdocs-download/${ARCHIVE}" "$URL"
+          echo "${KDOCS_CLI_SHA256}  .kdocs-download/${ARCHIVE}" | shasum -a 256 -c -
+          tar -xzf ".kdocs-download/${ARCHIVE}" -C .kdocs-download
+          CLI_PATH="$(find .kdocs-download -type f -name kdocs-cli -print -quit)"
+          test -n "$CLI_PATH"
+          install -m 755 "$CLI_PATH" vendor/kdocs-cli
+          test "$(vendor/kdocs-cli version | head -n 1 | tr -d '\r')" != ""
 
       - name: 生成 macOS 图标
         run: |
@@ -75,6 +82,13 @@ jobs:
           python -m PyInstaller --clean --noconfirm build_mac.spec
           test -d "dist/顿河学院学生测评管理软件.app"
           test -x "dist/顿河学院学生测评管理软件.app/Contents/MacOS/顿河学院学生测评管理软件"
+          python - <<'PY'
+          from pathlib import Path
+          toc_files = list(Path("build").rglob("Analysis-00.toc"))
+          assert toc_files, "PyInstaller analysis manifest not found"
+          assert any("kdocs-cli" in path.read_text(encoding="utf-8", errors="ignore") for path in toc_files)
+          print("bundled kdocs-cli: verified")
+          PY
 
       - name: 临时签名并验证应用
         run: |
@@ -98,8 +112,8 @@ jobs:
       - name: 创建 DMG
         run: |
           APP_NAME="顿河学院学生测评管理软件"
-          DMG_PATH="dist/${APP_NAME}-macOS-${{ matrix.arch }}.dmg"
-          STAGING="dist/dmg-${{ matrix.arch }}"
+          DMG_PATH="dist/${APP_NAME}-macOS-arm64.dmg"
+          STAGING="dist/dmg-arm64"
           mkdir -p "$STAGING"
           cp -R "dist/${APP_NAME}.app" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
@@ -114,10 +128,10 @@ jobs:
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: 顿河学院学生测评管理软件-macOS-${{ matrix.arch }}
+          name: 顿河学院学生测评管理软件-macOS-arm64
           path: |
-            dist/顿河学院学生测评管理软件-macOS-${{ matrix.arch }}.dmg
-            dist/顿河学院学生测评管理软件-macOS-${{ matrix.arch }}.dmg.sha256
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg.sha256
           retention-days: 30
           if-no-files-found: error
 
@@ -126,6 +140,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/顿河学院学生测评管理软件-macOS-${{ matrix.arch }}.dmg
-            dist/顿河学院学生测评管理软件-macOS-${{ matrix.arch }}.dmg.sha256
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg.sha256
           generate_release_notes: true

@@ -83,17 +83,38 @@ def _subprocess_window_options() -> dict:
 
 
 def _find_cli() -> str:
+    # Prefer the version shipped with the desktop application. Finder-launched
+    # macOS apps do not inherit the user's interactive-shell PATH, so relying on
+    # shutil.which() alone makes an otherwise installed CLI invisible.
+    if getattr(sys, "frozen", False):
+        bundle_dir = Path(getattr(sys, "_MEIPASS", ""))
+        # Checking both names also keeps mixed development/build environments
+        # predictable when tests inspect a bundle from another platform.
+        for bundled_name in ("kdocs-cli", "kdocs-cli.exe"):
+            bundled = bundle_dir / bundled_name
+            if bundled.is_file():
+                return str(bundled)
+
     found = shutil.which("kdocs-cli")
     if found:
         return found
-    if getattr(sys, "frozen", False):
-        bundled = Path(getattr(sys, "_MEIPASS", "")) / "kdocs-cli.exe"
-        if bundled.is_file():
-            return str(bundled)
-    if os.name == "nt":
+
+    if sys.platform == "darwin":
+        # Standard location used by the official Kdocs macOS installer. Check
+        # it directly because Finder apps normally have a minimal PATH.
+        candidate = Path.home() / ".local" / "bin" / "kdocs-cli"
+        if candidate.is_file():
+            return str(candidate)
+    elif os.name == "nt":
         candidate = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "kdocs-cli" / "kdocs-cli.exe"
         if candidate.is_file():
             return str(candidate)
+    else:
+        # Standard location used by the official Kdocs Linux installer.
+        candidate = Path.home() / ".local" / "bin" / "kdocs-cli"
+        if candidate.is_file():
+            return str(candidate)
+
     raise KdocsSyncError("未找到 kdocs-cli，请先安装或重新启动软件后再试。")
 
 
