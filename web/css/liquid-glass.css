@@ -1,0 +1,84 @@
+/* Restrained liquid glass: reserved for app chrome, floating tools and overlays.
+   Data tables, scores, course cells and eligibility decisions stay opaque. */
+:root {
+    --school-glass-bg: rgba(255, 253, 248, .68);
+    --school-glass-bg-strong: rgba(255, 253, 248, .84);
+    --school-glass-border: rgba(255, 255, 255, .76);
+    --school-glass-highlight: rgba(255, 255, 255, .90);
+    --school-glass-shadow: 0 18px 42px rgba(23, 55, 47, .10), inset 0 1px 0 rgba(255, 255, 255, .84);
+}
+
+[data-theme="dark"] {
+    --school-glass-bg: rgba(27, 41, 36, .68);
+    --school-glass-bg-strong: rgba(31, 48, 41, .84);
+    --school-glass-border: rgba(255, 255, 255, .12);
+    --school-glass-highlight: rgba(255, 255, 255, .16);
+    --school-glass-shadow: 0 20px 48px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .12);
+}
+
+.school-glass,
+#header,
+.counselor-header,
+.modal-card,
+.toast,
+.major-scope-chip,
+.quality-mode-switch,
+.gpa-review-top,
+.award-result-head {
+    background: linear-gradient(145deg, var(--school-glass-bg-strong), var(--school-glass-bg));
+    border: 1px solid var(--school-glass-border);
+    box-shadow: var(--school-glass-shadow);
+    backdrop-filter: blur(22px) saturate(1.24);
+    -webkit-backdrop-filter: blur(22px) saturate(1.24);
+}
+
+.modal-overlay {
+    background: rgba(23, 55, 47, .22);
+    backdrop-filter: blur(16px) saturate(1.08);
+    -webkit-backdrop-filter: blur(16px) saturate(1.08);
+}
+
+[data-theme="dark"] .modal-overlay { background: rgba(4, 12, 9, .58); }
+
+.major-scope-chip,
+.quality-mode-switch,
+.gpa-review-top,
+.award-result-head {
+    position: relative;
+    isolation: isolate;
+}
+
+.major-scope-chip::after,
+.quality-mode-switch::after,
+.gpa-review-top::after,
+.award-result-head::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: linear-gradient(118deg, rgba(255,255,255,.26), transparent 32%, transparent 72%, rgba(111,159,166,.08));
+    pointer-events: none;
+}
+
+.input,
+.select-input,
+.file-path {
+    background-color: color-mix(in srgb, var(--bg-tertiary) 82%, transparent);
+    border-color: color-mix(in srgb, var(--border-color) 86%, transparent);
+    box-shadow: inset 0 1px 3px rgba(23,55,47,.05), 0 1px 0 rgba(255,255,255,.45);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .school-glass,
+    #header,
+    .counselor-header,
+    .modal-card,
+    .toast,
+    .major-scope-chip,
+    .quality-mode-switch,
+    .gpa-review-top,
+    .award-result-head {
+        background: var(--bg-primary);
+    }
+}

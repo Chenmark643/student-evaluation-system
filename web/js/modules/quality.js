@@ -13,6 +13,7 @@ let qualityCurrentClass = '';
 let qualityThresholds = [];
 let qualityMode = localStorage.getItem('quality_preferred_mode') || 'import';
 let qualitySemiParsed = null;
+let qualityLastOutput = '';
 
 // V10: Batch bonus state
 let qualityBatchTargets = new Set();
@@ -440,7 +441,8 @@ async function qualityExport() {
         if (!MajorScope.requireForExport()) return;
         const result = await eel.export_quality_with_roster(qualityRoster, qualityData, outPath, thDict, MajorScope.get())();
         if (result.success) {
-            document.getElementById('quality-result-area').innerHTML = `<div class="result-card"><div class="result-stat"><div class="stat-value">${result.student_count}</div><div class="stat-label">学生</div></div><div class="result-stat"><div class="stat-value">${result.class_count}</div><div class="stat-label">班级</div></div><div class="result-actions"><button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output.replace(/\\/g,'\\\\')}')()">📂 打开文件</button></div></div>`;
+            qualityLastOutput = result.output;
+            document.getElementById('quality-result-area').innerHTML = `<div class="result-card"><div class="result-stat"><div class="stat-value">${result.student_count}</div><div class="stat-label">学生</div></div><div class="result-stat"><div class="stat-value">${result.class_count}</div><div class="stat-label">班级</div></div><div class="result-actions"><button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output.replace(/\\/g,'\\\\')}')()">📂 打开文件</button><button data-cloud-sync-id="quality-main" class="btn btn-primary btn-sm" onclick="CloudSync.request('quality-main')">☁ 同步素拓云表</button></div></div>`;
             CompletionCelebration.mark('quality', result.output);
             showOutputDialog(true, `成功导出 ${result.student_count} 名学生的素拓分数`, [result.output]);
         } else { showOutputDialog(false, result.error || '导出失败'); }
@@ -562,7 +564,7 @@ function qualityManualRenderPreview(result) {
     html += `</tbody></table><p style="font-size:10px;color:var(--text-muted);margin-top:4px;">💡 检查无误后点击「导出素拓分数」</p>`; el.innerHTML = html;
 }
 
-function resetModuleQuality() { qualityRoster = {}; qualityClassOrder = []; qualityData = {}; qualityCurrentSid = ''; qualityCurrentClass = ''; qualityMode = 'auto'; qualityImportTree = null; qualityImportBaseDir = ''; qualityImportZipPaths = []; qualityImportSelectedClass = ''; qualityImportSelectedStudent = ''; qualityImportProgress = {}; qualityImportExpanded = {}; qualityViewerStudent = null; qualityImportRosterMap = {}; qualitySemiParsed = null; renderModuleQuality(); }
+function resetModuleQuality() { qualityRoster = {}; qualityClassOrder = []; qualityData = {}; qualityCurrentSid = ''; qualityCurrentClass = ''; qualityMode = 'auto'; qualityImportTree = null; qualityImportBaseDir = ''; qualityImportZipPaths = []; qualityImportSelectedClass = ''; qualityImportSelectedStudent = ''; qualityImportProgress = {}; qualityImportExpanded = {}; qualityViewerStudent = null; qualityImportRosterMap = {}; qualitySemiParsed = null; qualityLastOutput = ''; renderModuleQuality(); }
 
 // ============================================================
 // Import Mode: Zip Pick & Unzip

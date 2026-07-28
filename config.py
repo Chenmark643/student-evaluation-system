@@ -5,14 +5,24 @@ Global constants and configuration for the Student Evaluation System.
 import os
 import sys
 
+
+APP_NAME = "顿河学院学生测评管理软件"
+
+
+def _user_data_dir():
+    if sys.platform == 'darwin':
+        root = os.path.expanduser('~/Library/Application Support')
+    elif os.name == 'nt':
+        root = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
+    else:
+        root = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
+    return os.path.join(root, APP_NAME, 'data')
+
+
 # Base directory resolution (works both dev and PyInstaller bundled)
 if getattr(sys, 'frozen', False):
     BASE_DIR = sys._MEIPASS
-    DATA_DIR = os.path.join(
-        os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
-        '顿河学院学生测评管理软件',
-        'data',
-    )
+    DATA_DIR = _user_data_dir()
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -29,8 +39,7 @@ WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 
 # App metadata
-APP_NAME = "顿河学院学生测评管理软件"
-APP_VERSION = "7.0.0"
+APP_VERSION = "14.0.2"
 
 # Module A constants
 PE_KEYWORDS = ['体育', '運動', 'PE']

@@ -35,16 +35,7 @@ function initSplashScreen() {
         setTimeout(() => {
             splash.classList.add('hidden');
             setTimeout(() => {
-                // Route based on login state — not unconditionally showWelcome
-                const loggedIn = sessionStorage.getItem('eval_logged_in');
-                const role = sessionStorage.getItem('eval_role');
-                if (loggedIn === '1' && role === 'counselor') {
-                    showCounselorWelcome();
-                } else if (loggedIn === '1') {
-                    showWelcome();
-                } else {
-                    showLoginPage();
-                }
+                showRoleSelection();
             }, 400);
         }, 250);
     }, 1600);
@@ -100,30 +91,26 @@ function showRandomQuote() {
 // ============================================================
 // Time-based Auto Theme
 // ============================================================
+let themeAutoTimer = null;
+
+function applyTheme(theme, persist = false) {
+    const next = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    if (persist) localStorage.setItem('theme_override', next);
+    document.querySelectorAll('.theme-toggle').forEach(btn => {
+        btn.innerHTML = next === 'light' ? '🌙' : '☀️';
+        btn.title = next === 'light' ? '切换到深色模式' : '切换到浅色模式';
+        btn.setAttribute('aria-label', btn.title);
+    });
+}
+
 function detectThemeByTime() {
     const h = new Date().getHours();
     const shouldBeLight = (h >= 6 && h < 18);
-    const current = document.documentElement.getAttribute('data-theme');
-
-    // Check user override
     const saved = localStorage.getItem('theme_override');
-    if (saved) {
-        if (saved === 'light') {
-            document.documentElement.setAttribute('data-theme', 'light');
-        } else {
-            document.documentElement.removeAttribute('data-theme');
-        }
-        return;
-    }
-
-    if (shouldBeLight && current !== 'light') {
-        document.documentElement.setAttribute('data-theme', 'light');
-    } else if (!shouldBeLight && current === 'light') {
-        document.documentElement.removeAttribute('data-theme');
-    }
-
-    // Re-check every 10 minutes
-    setTimeout(detectThemeByTime, 600000);
+    applyTheme(saved === 'light' || saved === 'dark' ? saved : (shouldBeLight ? 'light' : 'dark'));
+    if (themeAutoTimer) clearTimeout(themeAutoTimer);
+    if (!saved) themeAutoTimer = setTimeout(detectThemeByTime, 600000);
 }
 
 // ============================================================
@@ -134,13 +121,140 @@ function startWorking() {
     document.getElementById('module-select-page').style.display = 'flex';
     document.getElementById('app').style.display = 'none';
     document.getElementById('welcome-quote').style.display = 'none';
+    renderTaskCenter();
+}
+
+// ============================================================
+// Evaluation Task Center — UI organization only; scoring logic is untouched.
+// ============================================================
+const TASK_STORAGE_KEY = 'eval_measurement_tasks_v1';
+const ACTIVE_TASK_KEY = 'eval_active_measurement_task';
+
+function getEvaluationTasks() {
+    try {
+        const tasks = JSON.parse(localStorage.getItem(TASK_STORAGE_KEY) || '[]');
+        return Array.isArray(tasks) ? tasks : [];
+    } catch (e) { return []; }
+}
+
+function saveEvaluationTasks(tasks) {
+    localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(tasks));
+}
+
+function ensureEvaluationTask() {
+    let tasks = getEvaluationTasks();
+    if (!tasks.length) {
+        const now = new Date();
+        const year = now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1;
+        tasks = [{
+            id: 'task-' + Date.now(),
+            name: `${year}-${year + 1}学年综合测评`,
+            semester: now.getMonth() >= 7 ? '第一学期' : '第二学期',
+            grade: '全部年级',
+            status: '进行中',
+            createdAt: Date.now()
+        }];
+        saveEvaluationTasks(tasks);
+    }
+    if (!localStorage.getItem(ACTIVE_TASK_KEY)) localStorage.setItem(ACTIVE_TASK_KEY, tasks[0].id);
+    return tasks;
+}
+
+function getTaskModuleState() {
+    const completed = window.CompletionCelebration?.state?.() || {};
+    return Object.fromEntries(['gpa','moral','quality','comprehensive'].map(key => [key, Boolean(completed[key]?.done)]));
+}
+
+function renderTaskCenter() {
+    const container = document.getElementById('task-center-content');
+    if (!container) return;
+    const tasks = ensureEvaluationTask();
+    const activeId = localStorage.getItem(ACTIVE_TASK_KEY);
+    const active = tasks.find(t => t.id === activeId) || tasks[0];
+    const state = getTaskModuleState();
+    const modules = [
+        ['gpa', '01', '学分绩点', '导入成绩并生成绩点结果'],
+        ['moral', '02', '德育测评', '汇总出勤、卫生与评议数据'],
+        ['quality', '03', '素质拓展', '录入加分项目并执行上限管控'],
+        ['comprehensive', '04', '综合测评', '汇总三项结果并生成排名'],
+        ['toolbox', '05', '荣誉资格核验台', '评奖评优申报资格辅助核验']
+    ];
+    const readyCount = Object.values(state).filter(Boolean).length;
+    const progress = readyCount * 25;
+    const history = getHistory().slice(0, 4);
+    const safe = value => String(value || '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+
+    container.innerHTML = `
+        <section class="task-hero-card">
+            <div class="task-hero-main">
+                <div class="task-status-row"><span class="task-live-dot"></span>${safe(active.status)}<span>·</span><span>${safe(active.grade)}</span></div>
+                <h2>${safe(active.name)}</h2>
+                <p>${safe(active.semester)} · 当前任务中的四个模块继续使用原有计算规则</p>
+                <div class="task-progress"><span style="width:${progress}%"></span></div>
+                <small>完成进度 ${progress}% · ${readyCount}/4 项工作已经完成</small>
+            </div>
+            <div class="task-progress-ring" style="--task-progress:${progress * 3.6}deg"><strong>${progress}%</strong><span>任务进度</span></div>
+        </section>
+        <section class="task-center-section">
+            <div class="task-section-heading"><div><span>工作流程</span><h2>继续处理当前任务</h2></div><small>建议按顺序完成，综合测评仍可独立进入</small></div>
+            <div class="task-module-grid">
+                ${modules.map(([key, no, title, desc]) => `
+                    <button class="task-module-card" onclick="enterModule('${key}')">
+                        <span class="task-module-number">${no}</span>
+                        <span class="task-module-copy"><strong>${title}</strong><small>${desc}</small></span>
+                        <span class="task-module-state ${state[key] ? 'ready' : ''}">${key==='toolbox'?'进入审核':(state[key] ? '已完成' : '待开始')}</span>
+                        <span class="task-module-arrow">↗</span>
+                    </button>`).join('')}
+            </div>
+        </section>
+        <div class="task-lower-grid">
+            <section class="task-center-section task-activity-card">
+                <div class="task-section-heading"><div><span>最近动态</span><h2>处理记录</h2></div></div>
+                <div class="task-activity-list">
+                    ${history.length ? history.map(item => `<div><span class="task-activity-icon">✓</span><p><strong>${safe(item.summary || item.module || '完成数据处理')}</strong><small>${item.time ? new Date(item.time).toLocaleString('zh-CN') : '最近'}</small></p></div>`).join('') : '<div class="task-empty-line"><span>暂无处理记录，从上方选择一个模块开始。</span></div>'}
+                </div>
+            </section>
+            <section class="task-center-section task-check-card">
+                <div class="task-section-heading"><div><span>发布前检查</span><h2>结果可信度</h2></div></div>
+                <ul class="task-check-list">
+                    <li><span>1</span>确认导入文件与目标年级一致</li>
+                    <li><span>2</span>在预览中检查缺失、重复与错配</li>
+                    <li><span>3</span>导出前复核任务名称和学期</li>
+                </ul>
+            </section>
+        </div>`;
+}
+
+function openCreateEvaluationTask() {
+    const now = new Date();
+    showModal('新建测评任务', `
+        <div class="task-create-form">
+            <div class="form-group"><label>任务名称</label><input id="task-name-input" class="input" value="${now.getFullYear()}-${now.getFullYear() + 1}学年综合测评"></div>
+            <div class="form-row"><div class="form-group"><label>学期</label><select id="task-semester-input" class="select-input"><option>第一学期</option><option>第二学期</option><option>学年</option></select></div><div class="form-group"><label>年级范围</label><input id="task-grade-input" class="input" placeholder="例如：2025级" value="全部年级"></div></div>
+            <p class="task-create-note">新建任务只整理工作入口，不会修改任何计算公式。</p>
+        </div>`, `<button class="btn btn-ghost" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="createEvaluationTask()">创建任务</button>`);
+}
+
+function createEvaluationTask() {
+    const name = document.getElementById('task-name-input').value.trim();
+    const semester = document.getElementById('task-semester-input').value;
+    const grade = document.getElementById('task-grade-input').value.trim() || '全部年级';
+    if (!name) { showToast('请输入任务名称', 'warning'); return; }
+    const tasks = getEvaluationTasks();
+    const task = { id: 'task-' + Date.now(), name, semester, grade, status: '进行中', createdAt: Date.now() };
+    tasks.unshift(task);
+    saveEvaluationTasks(tasks);
+    localStorage.setItem(ACTIVE_TASK_KEY, task.id);
+    closeModal();
+    renderTaskCenter();
+    showToast('测评任务已创建', 'success');
 }
 
 // ============================================================
 // Counselor Welcome Page V7.0
 // ============================================================
 function showCounselorWelcome() {
-    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'none';
     document.getElementById('welcome-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'flex';
@@ -218,14 +332,15 @@ function enterModule(moduleName) {
     document.getElementById('module-select-page').style.display = 'none';
     document.getElementById('app').style.display = '';
 
-    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算' };
+    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', toolbox:'荣誉资格核验台', cloud:'学院云协作' };
     document.getElementById('module-title').textContent = titles[moduleName] || moduleName;
 
     // Show persistent widgets in workspace
     showCornerWidgets();
 
-    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive };
+    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace };
     if (renderers[moduleName]) renderers[moduleName]();
+    setTimeout(function() { if (window.refreshEmojis) refreshEmojis(); }, 200);
 
     document.querySelectorAll('.nav-btn[data-module]').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.module === moduleName);
@@ -233,7 +348,6 @@ function enterModule(moduleName) {
 
     initBackground();
     initKeyboard();
-    initAIPanel();
 
     // Restore module state if available
     setTimeout(() => restoreModuleState(moduleName), 200);
@@ -254,6 +368,15 @@ function saveModuleState(moduleName) {
             typeof moralColumnMappings !== 'undefined' ? moralColumnMappings : {}));
         moduleMemory._moralRoster = typeof moralRoster !== 'undefined'
             ? JSON.parse(JSON.stringify(moralRoster)) : {};
+        moduleMemory._moralWorkspaceMode = typeof moralWorkspaceMode !== 'undefined' ? moralWorkspaceMode : 'continue';
+        moduleMemory._moralExistingSource = typeof moralExistingSource !== 'undefined'
+            ? JSON.parse(JSON.stringify({path:moralExistingSource.path || '', mappings:moralExistingSource.mappings || {}, scope_classes:moralExistingSource.scope_classes || []})) : {path:'',mappings:{},scope_classes:[]};
+        moduleMemory._moralVnextItems = typeof moralVnextItems !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralVnextItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})))) : [];
+        moduleMemory._moralFreshItems = typeof moralFreshItems !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralFreshItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})))) : [];
+        moduleMemory._moralCloudOutputs = typeof moralCloudOutputs !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralCloudOutputs)) : [];
     }
     if (moduleName === 'quality') {
         moduleMemory._qualityRoster = typeof qualityRoster !== 'undefined'
@@ -276,6 +399,57 @@ function restoreModuleState(moduleName) {
         if (fp.moralOutputDir) {
             const el = document.getElementById('moral-output-dir');
             if (el && !el.value) { el.value = fp.moralOutputDir; el.classList.add('has-file'); }
+        }
+        if (fp.moralVnextOutputDir) {
+            const el = document.getElementById('moral-vnext-output-dir');
+            if (el && !el.value) { el.value = fp.moralVnextOutputDir; el.classList.add('has-file'); }
+        }
+        if (moduleMemory._moralWorkspaceMode && typeof moralWorkspaceMode !== 'undefined') {
+            moralWorkspaceMode = moduleMemory._moralWorkspaceMode;
+            if (typeof moralSetWorkspaceMode === 'function') moralSetWorkspaceMode(moralWorkspaceMode);
+        }
+        if (moduleMemory._moralExistingSource && typeof moralExistingSource !== 'undefined') {
+            moralExistingSource = JSON.parse(JSON.stringify(moduleMemory._moralExistingSource));
+            const name = document.getElementById('moral-existing-name');
+            const meta = document.getElementById('moral-existing-meta');
+            if (name && moralExistingSource.path) name.textContent = moralExistingSource.path.split(/[\\/]/).pop();
+            if (meta && moralExistingSource.path) meta.textContent = '映射已恢复 · 可重新检查';
+            name?.closest('.moral-source-well')?.classList.toggle('has-source', Boolean(moralExistingSource.path));
+        }
+        if (moduleMemory._moralVnextItems && typeof moralVnextItems !== 'undefined') {
+            moralVnextItems = JSON.parse(JSON.stringify(moduleMemory._moralVnextItems));
+            if (typeof moralRenderVnextItems === 'function') moralRenderVnextItems();
+        }
+        if (moduleMemory._moralFreshItems && typeof moralFreshItems !== 'undefined') {
+            moralFreshItems = JSON.parse(JSON.stringify(moduleMemory._moralFreshItems));
+            if (typeof moralRenderFreshItems === 'function') moralRenderFreshItems();
+        }
+        if (moduleMemory._moralCloudOutputs && typeof moralCloudOutputs !== 'undefined') {
+            moralCloudOutputs = JSON.parse(JSON.stringify(moduleMemory._moralCloudOutputs));
+            if (moralCloudOutputs.length && typeof moralLastOutput !== 'undefined') {
+                moralLastOutput = moralCloudOutputs[moralCloudOutputs.length - 1];
+            }
+        }
+        if (moduleMemory._moralVnextScoring) {
+            const scoring = moduleMemory._moralVnextScoring;
+            [['moral-vnext-base',scoring.base],['moral-vnext-min',scoring.min],['moral-vnext-max',scoring.max]].forEach(([id,value]) => {
+                const input = document.getElementById(id);
+                if (input && Number.isFinite(Number(value))) input.value = value;
+            });
+            const basis = document.querySelector(`input[name="moral-continuation-basis"][value="${scoring.basis === 'display' ? 'display' : 'raw'}"]`);
+            if (basis) basis.checked = true;
+            if (typeof moralUpdateBasisCards === 'function') moralUpdateBasisCards();
+        }
+        if (moduleMemory._moralFreshScoring) {
+            const scoring = moduleMemory._moralFreshScoring;
+            [['moral-fresh-base',scoring.base],['moral-fresh-min',scoring.min],['moral-fresh-max',scoring.max]].forEach(([id,value]) => {
+                const input = document.getElementById(id);
+                if (input && Number.isFinite(Number(value))) input.value = value;
+            });
+        }
+        if (typeof moralRefreshReadySummary === 'function') {
+            moralRefreshReadySummary('continue');
+            moralRefreshReadySummary('fresh');
         }
         // Restore ALL_MORAL_HEADERS from persistent memory
         if (moduleMemory._ALL_MORAL_HEADERS && typeof ALL_MORAL_HEADERS !== 'undefined') {
@@ -413,6 +587,7 @@ function backToModuleSelect() {
     document.getElementById('app').style.display = 'none';
     document.getElementById('module-select-page').style.display = 'flex';
     document.getElementById('welcome-page').style.display = 'none';
+    renderTaskCenter();
 }
 
 // ============================================================
@@ -429,9 +604,9 @@ function switchModule(moduleName) {
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.module === moduleName);
     });
-    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', settings: '系统设置' };
+    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', toolbox:'荣誉资格核验台', cloud:'学院云协作', settings: '系统设置' };
     document.getElementById('module-title').textContent = titles[moduleName] || moduleName;
-    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, settings: renderSettings };
+    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace, settings: renderSettings };
     const container = document.getElementById('module-container');
     if (renderers[moduleName]) {
         // Always re-render to get fresh DOM + event handlers, then restore data
@@ -459,7 +634,7 @@ function initNavigation() {
 // Settings
 // ============================================================
 function renderSettings() {
-    const user = sessionStorage.getItem('eval_user') || '未登录';
+    const user = sessionStorage.getItem('eval_user') || '未选择';
     const role = sessionStorage.getItem('eval_role') === 'secretary' ? '秘书处' : '辅导员';
     document.getElementById('module-container').innerHTML = `
         <div class="module-section"><h2>关于</h2>
@@ -499,7 +674,7 @@ function renderSettings() {
             <div style="font-size:12px;color:var(--text-secondary);line-height:2;">
                 <p>当前用户: <strong id="settings-current-user">—</strong></p>
                 <p>角色: <strong id="settings-current-role">—</strong></p>
-                <button class="btn btn-secondary btn-sm" onclick="doLogout()">切换用户</button>
+                <button class="btn btn-secondary btn-sm" onclick="doLogout()">切换身份</button>
             </div></div>`;
     // Update user info after render
     setTimeout(() => {
@@ -522,8 +697,8 @@ function doLogout() {
     document.getElementById('welcome-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'none';
-    showLoginPage();
-    showToast('已退出登录', 'info');
+    showRoleSelection();
+    showToast('请选择身份', 'info');
 }
 
 // ============================================================
@@ -562,22 +737,21 @@ function showChangelog() {
             <h4 style="color:var(--accent-primary);margin:8px 0;">v8.0.0 — 2026.06.07 🎉</h4>
             <p>📅 <strong>多学期追踪</strong>：支持导入多个历史学期，追踪长期趋势</p>
             <p>📉 <strong>单学期成绩分析</strong>：班级对比、挂科率排名、课程挂科率、成绩分布图</p>
-            <p>📧 <strong>家长通知单</strong>：一键批量生成家长通知，AI辅助撰写</p>
+            <p>📧 <strong>家长通知单</strong>：依据成绩数据一键批量生成规范通知</p>
             <p>💬 <strong>谈话记录管理</strong>：学生详情页添加谈话记录，支持日期+主题+内容+跟进</p>
             <p>⚠️ <strong>多级预警体系</strong>：安全→关注→预警→危险→严重 五级分层</p>
             <p>🏫 <strong>班级对比排行</strong>：总览页班级综测排行，大屏展示班级维度</p>
-            <p>🤖 <strong>结构化AI分析</strong>：雷达图分析、多维评分、对比班级均值</p>
             <p>🔍 <strong>智能文件检测</strong>：自动识别文件名中的学期、年级、专业</p>
             <p>📊 <strong>深度数据看板</strong>：标准差分析、综测分布、年级对比</p>
             <p>🎨 <strong>UI全面升级</strong>：斑马纹表格、空状态设计、卡片入场动画、多级颜色标识</p>
             <hr style="border-color:var(--border-thin);margin:8px 0;">
             <h4 style="color:var(--accent-primary);margin:8px 0;">v6.1.0 — 2026.06.06</h4>
             <p>辅导员工作台：5标签(总览/学生/预警/工具/设置)、双文件导入、对比图表、进步榜、大屏展示</p>
-            <p>🔐 多用户登录、结果预览编辑、持久记忆、快捷键、AI DeepSeek集成</p>
+            <p>🔐 多用户登录、结果预览编辑、持久记忆与快捷键</p>
             <hr style="border-color:var(--border-thin);margin:8px 0;">
             <p><strong>v2.3.0</strong> — 记忆功能、Logo常驻、名言轮播、分专业年级导出、德育增强</p>
             <p><strong>v2.2.0</strong> — 首页重设计、时间问候(中俄英)、自动主题切换</p>
-            <p><strong>v2.0.0</strong> — 数据匹配重写、AI集成、新手指引</p>
+            <p><strong>v2.0.0</strong> — 数据匹配重写与新手指引</p>
             <p><strong>v1.0.0</strong> — 首个正式版本 · 陈雨昂</p>
         </div>`, `<button class="btn btn-primary btn-sm" onclick="closeModal()">关闭</button>`);
 }
@@ -648,13 +822,10 @@ function initBackground() {
 function initThemeToggle() {
     const h = document.getElementById('header'); if (!h) return;
     const btn = document.createElement('button'); btn.className = 'theme-toggle';
-    btn.title = '切换主题'; btn.innerHTML = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀';
+    btn.title = '切换主题'; btn.innerHTML = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀️';
     btn.onclick = () => {
         const cur = document.documentElement.getAttribute('data-theme');
-        const next = cur === 'light' ? null : 'light';
-        if (next) { document.documentElement.setAttribute('data-theme', 'light'); localStorage.setItem('theme_override', 'light'); }
-        else { document.documentElement.removeAttribute('data-theme'); localStorage.setItem('theme_override', 'dark'); }
-        btn.innerHTML = next ? '🌙' : '☀';
+        applyTheme(cur === 'light' ? 'dark' : 'light', true);
     };
     h.querySelector('.header-actions').insertBefore(btn, h.querySelector('.header-actions').firstChild);
 }
@@ -667,11 +838,6 @@ function initKeyboard() {
             if (inWorkspace) switchModule(mods[parseInt(e.key) - 1]);
         }
     });
-}
-
-function getModuleAIPrompt(m) {
-    const p = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算' };
-    return `我正在使用${p[m]||''}模块。请帮我分析：`;
 }
 
 // ============================================================
@@ -692,6 +858,22 @@ function saveAllToMemory() {
         moralSelectedColumns: safeGet(() => moralSelectedColumns, null),
         ALL_MORAL_HEADERS: safeGet(() => ALL_MORAL_HEADERS, null),
         moralExportGradeFilter: safeGet(() => moralExportGradeFilter, 'all'),
+        moralWorkspaceMode: safeGet(() => moralWorkspaceMode, 'continue'),
+        moralExistingSource: safeGet(() => ({path:moralExistingSource.path || '', mappings:moralExistingSource.mappings || {}, scope_classes:moralExistingSource.scope_classes || []}), {path:'',mappings:{},scope_classes:[]}),
+        moralVnextItems: safeGet(() => moralVnextItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})), []),
+        moralFreshItems: safeGet(() => moralFreshItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})), []),
+        moralCloudOutputs: safeGet(() => [...moralCloudOutputs], []),
+        moralVnextScoring: {
+            base: Number(document.getElementById('moral-vnext-base')?.value ?? 115),
+            min: Number(document.getElementById('moral-vnext-min')?.value ?? 0),
+            max: Number(document.getElementById('moral-vnext-max')?.value ?? 115),
+            basis: document.querySelector('input[name="moral-continuation-basis"]:checked')?.value || 'raw',
+        },
+        moralFreshScoring: {
+            base: Number(document.getElementById('moral-fresh-base')?.value ?? 80),
+            min: Number(document.getElementById('moral-fresh-min')?.value ?? 0),
+            max: Number(document.getElementById('moral-fresh-max')?.value ?? 115),
+        },
         // Quality module
         qualityRoster: safeGet(() => qualityRoster, {}),
         qualityData: safeGet(() => qualityData, {}),
@@ -703,6 +885,7 @@ function saveAllToMemory() {
         // File inputs (restore on enter)
         moralRosterPath: document.getElementById('moral-roster-file')?.value || '',
         moralOutputDir: document.getElementById('moral-output-dir')?.value || '',
+        moralVnextOutputDir: document.getElementById('moral-vnext-output-dir')?.value || '',
         qualityRosterPath: document.getElementById('quality-roster-file')?.value || '',
         qualityOutputDir: document.getElementById('quality-output-dir')?.value || '',
         gpaOutputDir: safeGet(() => document.getElementById('gpa-output-dir')?.value, ''),
@@ -736,6 +919,21 @@ function restoreAllFromMemory() {
         if (data.moralSelectedColumns) moduleMemory._moralSelectedColumns = data.moralSelectedColumns;
         if (data.ALL_MORAL_HEADERS) moduleMemory._ALL_MORAL_HEADERS = data.ALL_MORAL_HEADERS;
         if (data.moralExportGradeFilter) moduleMemory._moralExportGradeFilter = data.moralExportGradeFilter;
+        if (data.moralWorkspaceMode) moduleMemory._moralWorkspaceMode = data.moralWorkspaceMode;
+        if (data.moralExistingSource) moduleMemory._moralExistingSource = data.moralExistingSource;
+        if (data.moralVnextItems) moduleMemory._moralVnextItems = data.moralVnextItems;
+        if (data.moralVnextScoring) moduleMemory._moralVnextScoring = data.moralVnextScoring;
+        if (data.moralFreshItems) moduleMemory._moralFreshItems = data.moralFreshItems;
+        if (data.moralFreshScoring) moduleMemory._moralFreshScoring = data.moralFreshScoring;
+        if (data.moralCloudOutputs) {
+            moduleMemory._moralCloudOutputs = data.moralCloudOutputs;
+            if (typeof moralCloudOutputs !== 'undefined') {
+                moralCloudOutputs = JSON.parse(JSON.stringify(data.moralCloudOutputs));
+                if (moralCloudOutputs.length && typeof moralLastOutput !== 'undefined') {
+                    moralLastOutput = moralCloudOutputs[moralCloudOutputs.length - 1];
+                }
+            }
+        }
         if (data.qualityRoster) moduleMemory._qualityRoster = data.qualityRoster;
         if (data.qualityData) moduleMemory._qualityData = data.qualityData;
         if (data.qualityThresholds) moduleMemory._qualityThresholds = data.qualityThresholds;
@@ -743,8 +941,10 @@ function restoreAllFromMemory() {
 
         // Restore file paths on next module enter
         moduleMemory._filePaths = {
+            gpaOutputDir: data.gpaOutputDir || '',
             moralRosterPath: data.moralRosterPath || '',
             moralOutputDir: data.moralOutputDir || '',
+            moralVnextOutputDir: data.moralVnextOutputDir || '',
             qualityRosterPath: data.qualityRosterPath || '',
             qualityOutputDir: data.qualityOutputDir || '',
             compOutputDir: data.compOutputDir || '',
@@ -773,7 +973,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Modal click-outside-to-close
     document.addEventListener('click', function(e) {
-        if (e.target.classList.contains('modal-overlay') && !e.target.closest('.modal-card')) {
+        if (e.target.classList.contains('modal-overlay') && !e.target.classList.contains('modal-locked') && !e.target.closest('.modal-card')) {
             e.target.classList.add('hidden');
         }
     });
@@ -782,7 +982,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
             document.querySelectorAll('.modal-overlay:not(.hidden)').forEach(ov => {
-                if (!ov.id.includes('preview') && !ov.id.includes('stats')) {
+                if (!ov.classList.contains('modal-locked') && !ov.id.includes('preview') && !ov.id.includes('stats')) {
                     ov.classList.add('hidden');
                 }
             });
@@ -803,53 +1003,33 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ============================================================
-// V3.0: Multi-User Login
+// Identity selection — local desktop app, no account verification required
 // ============================================================
-const USERS = {
-    admin:      { pwd: 'admin123',  name: '管理员',    role: 'secretary' },
-    mishuchu:   { pwd: 'dunhe521',  name: '秘书处',    role: 'secretary' },
-    fudaoyuan:  { pwd: 'sdjtu521',  name: '辅导员',    role: 'counselor' },
-};
-
-function showLoginPage() {
+function showRoleSelection() {
     document.getElementById('splash-screen').classList.add('hidden');
     document.getElementById('welcome-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
-    document.getElementById('login-page').style.display = 'flex';
-    document.getElementById('login-error').style.display = 'none';
-    // Restore last role
-    const lastRole = localStorage.getItem('last_login_role');
-    if (lastRole) document.getElementById('login-role').value = lastRole;
+    document.getElementById('module-select-page').style.display = 'none';
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'flex';
+    inWorkspace = false;
 }
 
-function doLogin() {
-    const username = document.getElementById('login-username').value.trim();
-    const password = document.getElementById('login-password').value;
-    const role = document.getElementById('login-role').value;
-    const errEl = document.getElementById('login-error');
-
-    if (!username || !password) {
-        errEl.textContent = '请输入用户名和密码'; errEl.style.display = 'block'; return;
-    }
-
-    const user = USERS[username];
-    if (!user || user.pwd !== password || user.role !== role) {
-        errEl.textContent = '用户名、密码或角色错误'; errEl.style.display = 'block'; return;
-    }
-
+function selectRole(role) {
+    if (role !== 'secretary' && role !== 'counselor') return;
+    const roleName = role === 'secretary' ? '秘书处' : '辅导员';
     sessionStorage.setItem('eval_logged_in', '1');
-    sessionStorage.setItem('eval_user', username);
+    sessionStorage.setItem('eval_user', roleName);
     sessionStorage.setItem('eval_role', role);
-    localStorage.setItem('last_login_role', role);  // Remember for next time
-    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'none';
 
     if (role === 'counselor') {
         showCounselorWelcome();
     } else {
         showWelcome();
     }
-    showToast(`欢迎，${user.name}！`, 'success');
+    showToast(`欢迎进入${roleName}端`, 'success');
 }
 
 // ============================================================
@@ -1031,7 +1211,7 @@ function initKeyboardShortcuts() {
 // ============================================================
 function showWelcome() {
     document.getElementById('welcome-page').style.display = 'flex';
-    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'none';
     document.getElementById('module-select-page').style.display = 'none';
@@ -1040,7 +1220,7 @@ function showWelcome() {
     updateGreeting();
     showRandomQuote();
     detectThemeByTime();
-    document.getElementById('college-logo').src = 'college-logo.png';
+    document.getElementById('college-logo').src = 'college-logo-v2.png';
     // Show quick stats
     const hist = getHistory();
     const statsEl = document.getElementById('welcome-stats');
@@ -1058,13 +1238,7 @@ function showWelcome() {
 
 function toggleThemeManual() {
     const cur = document.documentElement.getAttribute('data-theme');
-    if (cur === 'light') {
-        document.documentElement.removeAttribute('data-theme');
-        localStorage.setItem('theme_override', 'dark');
-    } else {
-        document.documentElement.setAttribute('data-theme', 'light');
-        localStorage.setItem('theme_override', 'light');
-    }
+    applyTheme(cur === 'light' ? 'dark' : 'light', true);
     // Refresh settings page button if visible
     const btn = document.getElementById('theme-toggle-btn');
     if (btn) {
@@ -1153,7 +1327,7 @@ async function showStatsDashboard() {
 function sendNotification(title, body) {
     if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') {
-        new Notification(title, { body, icon: 'college-logo.png' });
+        new Notification(title, { body, icon: 'college-mark-v2.png' });
     } else if (Notification.permission !== 'denied') {
         Notification.requestPermission().then(p => {
             if (p === 'granted') new Notification(title, { body });

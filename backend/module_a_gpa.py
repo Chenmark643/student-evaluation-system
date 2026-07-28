@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Module A: GPA Calculation (学分绩点计算)
 
@@ -15,7 +16,7 @@ from openpyxl.utils import get_column_letter
 
 from backend.parsers.xls_reader import read_raw_xls
 from backend.parsers.course_header_parser import parse_course_header
-from backend.utils.class_utils import parse_class_name, group_by_program_grade
+from backend.utils.class_utils import parse_class_name, group_by_program_grade, class_matches_program
 from backend.utils.rank_calculator import calculate_ranking
 from backend.utils.progress_reporter import ProgressReporter
 from backend.utils.excel_writer import write_values_sheet, unique_path
@@ -23,13 +24,16 @@ from config import PE_KEYWORDS, SCORE_MAPPING
 
 
 def process_gpa(input_path: str, output_dir: str,
-                progress: ProgressReporter = None) -> dict:
+                progress: ProgressReporter = None,
+                column_mappings: dict = None, major_filter: str = '') -> dict:
     """Process a single raw grade file. (legacy single-file mode)"""
-    return process_gpa_batch([input_path], output_dir, progress)
+    return process_gpa_batch([input_path], output_dir, progress, column_mappings, major_filter)
 
 
 def process_gpa_batch(input_paths: list, output_dir: str,
-                      progress: ProgressReporter = None) -> dict:
+                      progress: ProgressReporter = None,
+                      column_mappings: dict = None,
+                      major_filter: str = '') -> dict:
     """Process multiple raw grade files and merge into combined outputs.
 
     Output format matches the reference file exactly:
@@ -40,6 +44,7 @@ def process_gpa_batch(input_paths: list, output_dir: str,
     """
     if progress is None:
         progress = ProgressReporter()
+    column_mappings = column_mappings or {}
 
     # v2.3: Consistent styling — SimSun 10pt, centered, thin border, no fills
     thin_border = Border(
@@ -51,37 +56,51 @@ def process_gpa_batch(input_paths: list, output_dir: str,
     formula_font = Font(name='SimSun', size=10)
 
     total_files = len(input_paths)
+    source_jobs = _gpa_source_jobs(input_paths, column_mappings)
+    total_jobs = max(1, len(source_jobs))
     all_source_rows = []   # (class_name, raw_data_row_dict)
     all_course_headers = {}  # {canonical_header: {course_name, credit, is_pe}}
 
     # ---- Phase 1: Read all files ----
-    for fi, path in enumerate(input_paths):
-        pct = (fi / total_files) * 60
-        progress.update(pct, f'读取 {fi+1}/{total_files}: {os.path.basename(path)}')
-
-        df = read_raw_xls(path)
+    for fi, (path, selected_sheet, file_mapping) in enumerate(source_jobs):
+        pct = (fi / total_jobs) * 60
+        progress.update(pct, f'读取 {fi+1}/{total_jobs}: {os.path.basename(path)} · {selected_sheet or "默认工作表"}')
+        df = _read_gpa_source(path, selected_sheet, file_mapping)
         if df.empty:
             continue
 
         columns = list(df.columns)
-        col_map = _identify_columns(columns)
+        col_map = _identify_columns(columns, file_mapping)
         course_cols = col_map['course_cols']
+        course_defs = col_map.get('course_defs', [])
 
         # Parse course headers
-        for col_name in course_cols:
-            hdr_str = str(col_name)
+        for course_def in course_defs:
+            hdr_str = str(course_def.get('name') or columns[course_def['score_col']])
             if hdr_str not in all_course_headers:
                 parsed = parse_course_header(hdr_str)
+                parsed['course_name'] = course_def.get('name') or parsed.get('course_name') or hdr_str
+                if course_def.get('credit') is not None:
+                    parsed['credit'] = float(course_def.get('credit') or 0)
+                if course_def.get('is_pe') is not None:
+                    parsed['is_pe'] = bool(course_def.get('is_pe'))
                 all_course_headers[hdr_str] = parsed
 
         # Process each student row — keep RAW values
         for idx, row in df.iterrows():
+            excel_row = int(file_mapping.get('header_row', 0)) + int(idx) + 2
+            action = (file_mapping.get('row_actions', {}).get(str(excel_row), {})
+                      if isinstance(file_mapping, dict) else {})
+            if action.get('action') == 'exclude':
+                continue
             sid = _safe_str(row.get(col_map['student_id_col'], ''))
-            if not sid or sid == 'nan':
+            if not sid or sid == 'nan' or not re.fullmatch(r'\d{6,20}', sid):
                 continue
 
             name = _safe_str(row.get(col_map['name_col'], ''))
             class_name = _safe_str(row.get(col_map['class_col'], ''))
+            if major_filter and not class_matches_program(class_name, major_filter):
+                continue
             course_count = row.get(col_map['course_count_col'], len(course_cols))
 
             # Build a row dict with raw values
@@ -92,19 +111,29 @@ def process_gpa_batch(input_paths: list, output_dir: str,
                 '总学分': 0.0,  # Will be computed later
             }
 
-            for col_name in course_cols:
-                raw_val = row.get(col_name)
-                hdr_str = str(col_name)
+            detected_count = 0
+            for course_def in course_defs:
+                score_idx = course_def['score_col']
+                value_idx = course_def.get('value_col')
+                raw_primary = row.iloc[score_idx] if score_idx < len(row) else None
+                raw_companion = row.iloc[value_idx] if isinstance(value_idx, int) and value_idx < len(row) else None
+                raw_val = raw_companion if _parse_score(raw_companion) is not None else raw_primary
+                hdr_str = str(course_def.get('name') or columns[score_idx])
                 info = all_course_headers.get(hdr_str, {})
                 course_name = info.get('course_name', hdr_str[:30])
                 row_dict[course_name] = raw_val  # Preserve raw value
+                if _parse_score(raw_val) is not None:
+                    detected_count += 1
+
+            row_dict['课程门数'] = detected_count
 
             all_source_rows.append((class_name, row_dict))
 
     progress.update(65, f'读取完成，共 {len(all_source_rows)} 名学生')
 
     if not all_source_rows:
-        raise ValueError('未找到任何有效学生数据')
+        suffix = f'；当前专业“{major_filter}”在源文件中没有匹配班级' if major_filter else ''
+        raise ValueError(f'未找到任何有效学生数据{suffix}')
 
     # ---- Phase 2: Split by class ----
     class_groups = {}
@@ -466,7 +495,47 @@ def process_gpa_batch(input_paths: list, output_dir: str,
 # Helpers
 # ============================================================
 
-def _identify_columns(columns: list) -> dict:
+def _gpa_source_jobs(input_paths: list, column_mappings: dict) -> list:
+    """Expand every enabled worksheet into a processing job."""
+    jobs = []
+    for path in input_paths:
+        mapping = column_mappings.get(path, {}) if isinstance(column_mappings, dict) else {}
+        if isinstance(mapping, dict) and any(key.endswith('_col') for key in mapping):
+            jobs.append((path, None, mapping))
+            continue
+        enabled = [(name, value) for name, value in (mapping.items() if isinstance(mapping, dict) else [])
+                   if isinstance(value, dict) and value.get('enabled', True)]
+        if enabled:
+            jobs.extend((path, name, value) for name, value in enabled)
+        else:
+            jobs.append((path, None, {}))
+    return jobs
+
+def _selected_mapping_for_file(column_mappings: dict, path: str):
+    mapping = column_mappings.get(path, {}) if isinstance(column_mappings, dict) else {}
+    if not isinstance(mapping, dict):
+        return None, {}
+    if any(key.endswith('_col') for key in mapping):
+        return None, mapping
+    for sheet_name, sheet_mapping in mapping.items():
+        if isinstance(sheet_mapping, dict) and sheet_mapping.get('enabled', True):
+            return sheet_name, sheet_mapping
+    return None, {}
+
+
+def _read_gpa_source(path: str, sheet_name, mapping: dict) -> pd.DataFrame:
+    """Read the exact worksheet/header row confirmed in Import Studio."""
+    if sheet_name is None and not mapping:
+        return read_raw_xls(path)
+    header_row = mapping.get('header_row', 0)
+    if not isinstance(header_row, int) or header_row < 0:
+        header_row = 0
+    engine = 'xlrd' if os.path.splitext(path)[1].lower() == '.xls' else 'openpyxl'
+    return pd.read_excel(path, sheet_name=sheet_name or 0,
+                         header=header_row, engine=engine)
+
+
+def _identify_columns(columns: list, mapping: dict = None) -> dict:
     """Identify column roles from header names.
 
     Standard source format (29 columns):
@@ -488,21 +557,56 @@ def _identify_columns(columns: list) -> dict:
     """
     total = len(columns)
 
+    mapping = mapping or {}
     result = {
         'student_id_col': columns[0] if total > 0 else None,
         'name_col': columns[1] if total > 1 else None,
         'class_col': columns[2] if total > 2 else None,
         'course_count_col': columns[3] if total > 3 else None,
         'course_cols': [],
+        'course_defs': [],
     }
 
     # Course columns: from index 4 to (total - 8)
     # Last 8 columns are: 不及格门数, 平均分, 总分, 总学分, 获得学分, 平均学分绩, 平均学分绩点, 排名
-    course_end = max(4, total - 8)
-    for i in range(4, course_end):
+    field_map = {
+        'id_col': 'student_id_col', 'name_col': 'name_col',
+        'class_col': 'class_col', 'course_count_col': 'course_count_col',
+    }
+    for source_field, target_field in field_map.items():
+        idx = mapping.get(source_field)
+        if isinstance(idx, int) and 0 <= idx < total:
+            result[target_field] = columns[idx]
+
+    configured_defs = mapping.get('course_definitions')
+    if isinstance(configured_defs, list) and configured_defs:
+        for item in configured_defs:
+            if not isinstance(item, dict) or not item.get('enabled', True):
+                continue
+            score_idx = item.get('score_col')
+            if not isinstance(score_idx, int) or not (0 <= score_idx < total):
+                continue
+            course_def = dict(item)
+            result['course_defs'].append(course_def)
+            result['course_cols'].append(columns[score_idx])
+        return result
+
+    course_start = mapping.get('course_start_col', 4)
+    if not isinstance(course_start, int) or course_start < 0 or course_start >= total:
+        course_start = 4
+    course_end = max(course_start, total - 8)
+    reserved = {result['student_id_col'], result['name_col'], result['class_col'], result['course_count_col']}
+    for i in range(course_start, course_end):
         col_str = str(columns[i]).strip()
-        if col_str and col_str != 'nan' and 'Unnamed' not in col_str:
+        if columns[i] not in reserved and col_str and col_str != 'nan' and 'Unnamed' not in col_str:
             result['course_cols'].append(columns[i])
+            parsed = parse_course_header(col_str)
+            result['course_defs'].append({
+                'name': parsed.get('course_name') or col_str,
+                'score_col': i, 'value_col': None,
+                'credit': parsed.get('credit', 0),
+                'is_pe': parsed.get('is_pe', False), 'enabled': True,
+            })
 
     return result
 

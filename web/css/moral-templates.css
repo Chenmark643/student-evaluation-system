@@ -1,0 +1,140 @@
+.moral-template-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 13px 14px;
+    border: 1px solid color-mix(in srgb, #2f6f57 26%, var(--border-color));
+    border-radius: 12px 12px 0 0;
+    background: #18372f;
+    color: #fff;
+}
+.moral-template-toolbar > div:first-child strong,
+.moral-template-toolbar > div:first-child small { display: block; }
+.moral-template-toolbar > div:first-child strong { font-size: 13px; }
+.moral-template-toolbar > div:first-child small {
+    margin-top: 3px;
+    color: rgba(255,255,255,.68);
+    font-size: 9px;
+}
+.moral-template-toolbar > div:last-child { display: flex; gap: 7px; }
+.moral-template-toolbar .btn-ghost {
+    border-color: rgba(255,255,255,.3) !important;
+    color: #fff !important;
+}
+.moral-template-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0,1fr));
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid color-mix(in srgb, #2f6f57 22%, var(--border-color));
+    border-top: 0;
+    border-radius: 0 0 12px 12px;
+    background: color-mix(in srgb, #f5f1e8 64%, var(--bg-primary));
+}
+.moral-template-card {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 0;
+    padding: 11px;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+    box-shadow: 0 0 .5px rgba(0,0,0,.14), 0 1px 1px rgba(0,0,0,.08);
+}
+.moral-template-card.ready,
+.moral-template-card.manual {
+    border-color: color-mix(in srgb, #2f6f57 46%, var(--border-color));
+    box-shadow: inset 3px 0 #2f6f57;
+}
+.moral-template-card-head {
+    display: grid;
+    grid-template-columns: 32px minmax(0,1fr) auto;
+    align-items: center;
+    gap: 9px;
+}
+.moral-template-card-head > span {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: #dce9e2;
+    color: #245848;
+    font-weight: 800;
+}
+.moral-template-card.ready .moral-template-card-head > span,
+.moral-template-card.manual .moral-template-card-head > span {
+    background: #245848;
+    color: #fff;
+}
+.moral-template-card-head strong,
+.moral-template-card-head small { display: block; }
+.moral-template-card-head strong { font-size: 11px; }
+.moral-template-card-head small {
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 8px;
+}
+.moral-template-card-head em {
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 8px;
+    font-style: normal;
+}
+.moral-template-card.ready .moral-template-card-head em,
+.moral-template-card.manual .moral-template-card-head em {
+    background: color-mix(in srgb, #dce9e2 58%, var(--bg-secondary));
+    color: #245848;
+}
+.moral-template-card > p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 9px;
+    line-height: 1.45;
+}
+.moral-template-files { display: flex; flex-wrap: wrap; gap: 5px; }
+.moral-template-files span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    padding: 4px 6px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.moral-template-files button {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.moral-template-files button:hover { background: rgba(198,63,63,.1); color: #c63f3f; }
+.moral-template-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; }
+.moral-template-actions .btn { min-height: 29px; padding: 4px 8px; font-size: 8px; }
+.moral-custom-item-list:empty { display: none; }
+.moral-template-fixed-note { align-self: center; color: #2f6f57; font-size: 8px; font-weight: 700; }
+
+@media (max-width: 980px) {
+    .moral-template-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+    .moral-template-toolbar { align-items: stretch; flex-direction: column; }
+    .moral-template-toolbar > div:last-child { flex-wrap: wrap; }
+    .moral-template-actions .btn { min-height: 36px; }
+}

@@ -18,6 +18,7 @@ import tempfile
 import shutil
 import subprocess
 import threading
+import uuid
 import tkinter as tk
 from tkinter import filedialog
 from collections import defaultdict
@@ -47,6 +48,13 @@ def _open_path_in_os(path: str):
 
 from backend.module_a_gpa import process_gpa
 from backend.module_b_moral import process_moral_education, preview_file_sheets
+from backend.moral_vnext import list_moral_students as list_moral_students_impl, process_moral_fresh, process_moral_vnext
+from backend.moral_templates import (
+    analyze_moral_project_templates as analyze_moral_project_templates_impl,
+    copy_moral_project_templates as copy_moral_project_templates_impl,
+    list_moral_project_templates as list_moral_project_templates_impl,
+)
+from backend.moral_cloud import prepare_moral_cloud_bundle as prepare_moral_cloud_bundle_impl
 from backend.module_c_quality import (
     load_activity_mappings, record_activity, get_activity_suggestion,
     get_categories, get_grades_for_category, get_thresholds,
@@ -65,6 +73,16 @@ from backend.import_studio import (
 )
 from backend.quality_presets import (
     build_official_presets, calculate_activity_score, validate_manual_score,
+)
+from backend.kdocs_sync import (
+    auth_status as kdocs_auth_status_impl,
+    bind_workbook as kdocs_bind_workbook_impl,
+    get_binding as kdocs_get_binding_impl,
+    get_sync_overview as kdocs_get_sync_overview_impl,
+    login as kdocs_login_impl,
+    logout as kdocs_logout_impl,
+    reorder_bound_workbook as kdocs_reorder_workbook_impl,
+    sync_workbook as kdocs_sync_workbook_impl,
 )
 
 
@@ -87,6 +105,197 @@ def ping_diag():
     """Diagnostic: verify API bridge works."""
     _diag('ping_diag called — API bridge OK')
     return 'pong'
+
+
+# ============================================================
+# Kdocs cloud workbook integration
+# ============================================================
+
+_KDOCS_JOBS = {}
+_KDOCS_JOBS_LOCK = threading.Lock()
+
+
+def _update_kdocs_job(job_id: str, **updates) -> None:
+    with _KDOCS_JOBS_LOCK:
+        job = _KDOCS_JOBS.get(job_id)
+        if job is not None:
+            job.update(updates)
+
+@eel.expose
+def kdocs_auth_status() -> dict:
+    """Return connection state without exposing credentials."""
+    return kdocs_auth_status_impl()
+
+
+@eel.expose
+def kdocs_login() -> dict:
+    """Open the browser OAuth flow and persist credentials in the OS keychain."""
+    return kdocs_login_impl()
+
+
+@eel.expose
+def kdocs_logout() -> dict:
+    """Disconnect the local WPS account by removing its saved credential."""
+    return kdocs_logout_impl()
+
+
+@eel.expose
+def kdocs_get_binding(cloud_key: str) -> dict:
+    """Return the saved cloud workbook link for one logical output."""
+    return kdocs_get_binding_impl(cloud_key)
+
+
+@eel.expose
+def kdocs_get_sync_overview(cloud_key: str, major: str = "") -> dict:
+    """Return current visible cloud sheets and last synchronization state."""
+    return kdocs_get_sync_overview_impl(cloud_key, major)
+
+
+@eel.expose
+def kdocs_bind_workbook(cloud_key: str, link_url: str) -> dict:
+    """Bind another operator to the existing college-wide cloud workbook."""
+    return kdocs_bind_workbook_impl(cloud_key, link_url)
+
+
+@eel.expose
+def kdocs_sync_workbook(local_path: str, cloud_key: str) -> dict:
+    """Publish a generated workbook or update its existing Kdocs counterpart."""
+    return kdocs_sync_workbook_impl(local_path, cloud_key)
+
+
+@eel.expose
+def prepare_moral_cloud_bundle(local_paths: list) -> dict:
+    """Combine mixed A/B moral outputs into visible per-class sheets for cloud sync."""
+    try:
+        return prepare_moral_cloud_bundle_impl(local_paths or [])
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+@eel.expose
+def kdocs_start_sync_workbook(local_path: str, cloud_key: str, force_create: bool = False) -> dict:
+    """Start synchronization in a background thread and return a progress id."""
+    job_id = uuid.uuid4().hex
+    with _KDOCS_JOBS_LOCK:
+        finished = [key for key, value in _KDOCS_JOBS.items() if value.get("done")]
+        for old_id in finished[:-20]:
+            _KDOCS_JOBS.pop(old_id, None)
+        _KDOCS_JOBS[job_id] = {
+            "success": True,
+            "job_id": job_id,
+            "done": False,
+            "status": "running",
+            "percent": 0,
+            "stage": "正在排队",
+            "detail": "准备连接金山文档",
+            "current_sheet": "",
+            "sheet_index": 0,
+            "sheet_total": 0,
+        }
+
+    def report(percent, stage, detail="", **extra):
+        allowed = {key: extra[key] for key in ("current_sheet", "sheet_index", "sheet_total") if key in extra}
+        _update_kdocs_job(
+            job_id,
+            percent=max(0, min(100, int(percent))),
+            stage=str(stage or "正在同步"),
+            detail=str(detail or ""),
+            **allowed,
+        )
+
+    def worker():
+        try:
+            result = kdocs_sync_workbook_impl(
+                local_path,
+                cloud_key,
+                progress_callback=report,
+                force_create=bool(force_create),
+            )
+        except Exception as exc:
+            result = {"success": False, "error": str(exc)}
+        ok = bool(result.get("success"))
+        _update_kdocs_job(
+            job_id,
+            done=True,
+            status="success" if ok else "error",
+            percent=100,
+            stage="同步完成" if ok else "同步失败",
+            detail=(result.get("name") or "云表已更新") if ok else result.get("error", "同步未完成"),
+            result=result,
+        )
+
+    threading.Thread(target=worker, name=f"kdocs-sync-{job_id[:8]}", daemon=True).start()
+    return {"success": True, "job_id": job_id}
+
+
+@eel.expose
+def kdocs_get_sync_progress(job_id: str) -> dict:
+    """Read one background synchronization snapshot."""
+    with _KDOCS_JOBS_LOCK:
+        job = _KDOCS_JOBS.get(str(job_id))
+        if job is None:
+            return {"success": False, "error": "找不到该同步任务，请重新开始。"}
+        return dict(job)
+
+
+@eel.expose
+def kdocs_start_reorder_workbook(cloud_key: str) -> dict:
+    """Start deterministic worksheet ordering in a background job."""
+    job_id = uuid.uuid4().hex
+    with _KDOCS_JOBS_LOCK:
+        _KDOCS_JOBS[job_id] = {
+            "success": True,
+            "job_id": job_id,
+            "done": False,
+            "status": "running",
+            "percent": 0,
+            "stage": "正在排队",
+            "detail": "准备整理学院云表",
+            "current_sheet": "",
+            "sheet_index": 0,
+            "sheet_total": 0,
+        }
+
+    def report(percent, stage, detail="", **extra):
+        allowed = {key: extra[key] for key in ("current_sheet", "sheet_index", "sheet_total") if key in extra}
+        _update_kdocs_job(
+            job_id,
+            percent=max(0, min(100, int(percent))),
+            stage=str(stage or "正在整理"),
+            detail=str(detail or ""),
+            **allowed,
+        )
+
+    def worker():
+        try:
+            result = kdocs_reorder_workbook_impl(cloud_key, progress_callback=report)
+        except Exception as exc:
+            result = {"success": False, "error": str(exc)}
+        ok = bool(result.get("success"))
+        _update_kdocs_job(
+            job_id,
+            done=True,
+            status="success" if ok else "error",
+            percent=100,
+            stage="顺序整理完成" if ok else "顺序整理失败",
+            detail=(f"已检查 {result.get('sheet_count', 0)} 张工作表" if ok else result.get("error", "整理未完成")),
+            result=result,
+        )
+
+    threading.Thread(target=worker, name=f"kdocs-reorder-{job_id[:8]}", daemon=True).start()
+    return {"success": True, "job_id": job_id}
+
+
+@eel.expose
+def open_web_link(url: str) -> dict:
+    """Open a validated HTTP(S) link in the user's default browser."""
+    if not isinstance(url, str) or not re.match(r'^https?://', url, re.I):
+        return {'success': False, 'error': '链接格式无效'}
+    try:
+        _open_path_in_os(url)
+        return {'success': True}
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
 
 
 def _legacy_dialog(dialog, *, title, file_types=None):
@@ -119,6 +328,30 @@ def select_files(file_types: list = None, title: str = '选择文件') -> list:
     _diag(f'select_files called')
     paths = _legacy_dialog(filedialog.askopenfilenames, title=title, file_types=file_types)
     return list(paths or [])
+
+
+@eel.expose
+def list_moral_project_templates() -> list:
+    """Return the fixed one-project template catalogue."""
+    return list_moral_project_templates_impl()
+
+
+@eel.expose
+def analyze_moral_project_templates(paths: list) -> dict:
+    """Validate multiple standard project templates without changing them."""
+    try:
+        return analyze_moral_project_templates_impl(paths or [])
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "files": []}
+
+
+@eel.expose
+def copy_moral_project_templates(project_key: str, output_dir: str) -> dict:
+    """Copy one or all bundled project templates to a selected folder."""
+    try:
+        return copy_moral_project_templates_impl(project_key or "", output_dir or "")
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 # ============================================================
@@ -309,6 +542,33 @@ def run_module_b(roster_path: str,
         return result
     except Exception as e:
         return {'success': False, 'error': str(e)}
+
+
+@eel.expose
+def run_moral_vnext(config: dict) -> dict:
+    """Continue a partially completed moral workbook with configurable items."""
+    try:
+        return process_moral_vnext(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def run_moral_fresh(config: dict) -> dict:
+    """Create moral scores from a roster with configurable add/deduct items."""
+    try:
+        return process_moral_fresh(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def list_moral_students(config: dict) -> dict:
+    """List students for project-level batch score entry."""
+    try:
+        return list_moral_students_impl(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
 
 
 # ============================================================
