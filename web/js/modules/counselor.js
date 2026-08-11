@@ -5,7 +5,7 @@
 let cData=[],cPrevData=[],cDataFull=[],cPrevDataFull=[];
 let cStarred={},cThresholds={gpa:2.0,moral:70,comp:60},cTags={};
 let cThresholdsMulti={gpa:{safe:2.8,watch:2.3,alert:2.0,danger:1.5},moral:{safe:85,watch:75,alert:65,danger:50},comp:{safe:80,watch:65,alert:55,danger:40}};
-let cPresets=[],cCurrentTab='overview',cCurrentPath='',cPrevPath='';
+let cPresets=[],cCurrentTab='notices',cCurrentPath='',cPrevPath='';
 let cSearchHistory=[],cSemesters=[],cAllSemesters={};
 let cSortCol=null,cSortDir=1;
 let cConversations={};
@@ -19,7 +19,7 @@ function escQs(s){return String(s||'').replace(/'/g,'&#39;');}
 function escJs(s){return String(s||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');}
 
 async function showCounselorDashboard(){
-    ['login-page','welcome-page','counselor-welcome-page','module-select-page','app'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
+    ['role-selection-page','welcome-page','counselor-welcome-page','module-select-page','app'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none';});
     document.getElementById('counselor-page').style.display='flex';
     document.getElementById('counselor-user-label').textContent='👤 '+(sessionStorage.getItem('eval_user')||'辅导员');
     cStarred=JSON.parse(localStorage.getItem('counselor_starred')||'{}');
@@ -35,6 +35,8 @@ async function showCounselorDashboard(){
     cGradeFilePath=localStorage.getItem('counselor_grade_file')||'';
     cCurrentPath=localStorage.getItem('counselor_current_path')||'';
     cPrevPath=localStorage.getItem('counselor_previous_path')||'';
+    // Notification is the counselor's primary daily workflow.
+    cCurrentTab='notices';
     renderCounselorNav();
     if(cCurrentPath)await cLoadFile('current',cCurrentPath);
     if(cPrevPath)await cLoadFile('previous',cPrevPath);
@@ -52,14 +54,16 @@ function renderCounselorNav(){
         {id:'bigscreen',icon:'🎯',label:'班会大屏'},
         {id:'settings',icon:'⚙️',label:'设置'},
     ];
-    document.getElementById('counselor-sidebar').innerHTML=items.map(it=>`
+    document.getElementById('counselor-sidebar').innerHTML=`
+        <div class="counselor-nav-brand"><span>辅</span><div><strong>辅导员端</strong><small>Student Workspace</small></div></div>
+        <p class="counselor-nav-caption">常用工作</p>`+items.map(it=>`
         <button class="counselor-sidebar-item ${it.id===cCurrentTab?'active':''} ${it.primary?'primary':''}" onclick="switchCounselorTab('${it.id}')">
             <span class="nav-icon">${it.icon}</span>${it.label}
-        </button>`).join('');
+        </button>`).join('')+`<div class="counselor-nav-spacer"></div><div class="counselor-nav-tip"><strong>通知优先</strong><span>完成数据导入后，即可批量生成家长通知。</span></div>`;
 }
 
 function switchCounselorTab(tab){
-    cCurrentTab=tab;renderCounselorNav();
+    cCurrentTab=tab;localStorage.setItem('counselor_last_tab',tab);renderCounselorNav();
     const area=document.getElementById('counselor-main');if(!area)return;
     area.style.opacity='0';
     setTimeout(()=>{
@@ -70,6 +74,7 @@ function switchCounselorTab(tab){
             if(fn)fn();
         }
         area.style.opacity='1';
+        setTimeout(function() { if (window.refreshEmojis) refreshEmojis(); }, 100);
     },200);
 }
 
@@ -583,8 +588,15 @@ function cRenderTagList(){const el=document.getElementById('counselor-tag-list')
 
 // ==================== 7. NOTICES ====================
 let cNoticeOptions=JSON.parse(localStorage.getItem('counselor_notice_options')||'{"includeBasic":true,"includeGpa":true,"includeMoral":true,"includeQuality":true,"includeComp":true,"includeRank":true,"includeFailed":true,"includeCompare":true,"includeTrend":true,"includeComment":false,"commentText":""}');
+if(cNoticeOptions.includeConcern===undefined)cNoticeOptions.includeConcern=true;
+let cNoticeTemplate=JSON.parse(localStorage.getItem('counselor_notice_template')||'{"title":"家长通知","greeting":"您好！","closing":"请家长关注学生近期情况，与学校保持沟通，共同帮助学生成长。","signature":"辅导员","customBlock":""}');
+let cGeneratedNotices=[];
 
 function cSaveNoticeOptions(){localStorage.setItem('counselor_notice_options',JSON.stringify(cNoticeOptions));}
+function cSaveNoticeTemplate(){
+    ['title','greeting','closing','signature','customBlock'].forEach(k=>{const el=document.getElementById('notice-template-'+k);if(el)cNoticeTemplate[k]=el.value;});
+    localStorage.setItem('counselor_notice_template',JSON.stringify(cNoticeTemplate));
+}
 
 async function cPickNoticeGradeFile(){
     eel.select_file([['Excel文件','*.xls *.xlsx']],'选择学分绩点原始文件')(async p=>{
@@ -617,63 +629,45 @@ async function cAnalyzeNoticeGrade(){
 function cRenderNotices(){
     const curFile=cCurrentPath?cCurrentPath.split(/[\\/]/).pop():'';
     const prevFile=cPrevPath?cPrevPath.split(/[\\/]/).pop():'';
+    const readyCount=(cCurrentPath?1:0)+(cGradeFilePath?1:0);
+    const alertCount=cData.filter(d=>(d.comp||0)<60).length;
+    const failedCount=cCourseAnalysis?.student_course_map?Object.values(cCourseAnalysis.student_course_map).filter(x=>x&&(x.failed_courses||[]).length).length:0;
     document.getElementById(cRenderTarget).innerHTML=`
-        <h2 style="margin-bottom:16px;">📧 通知工具</h2>
-        <div class="module-section" style="border:2px dashed var(--accent-primary);background:var(--accent-primary-muted);">
-            <h3>📂 数据导入</h3>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">导入综测数据文件，支持本学期、上学期及历史学期</p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                <span style="font-size:11px;color:var(--text-muted);">📗 本学期:</span>
-                <input id="counselor-file-current" class="file-path" readonly style="width:130px;font-size:10px;" placeholder="本学期文件..." value="${escapeHtml(curFile)}">
-                <button class="btn btn-teal btn-sm" style="padding:4px 8px;font-size:10px;" onclick="cImportFile('current')">选择</button>
-                <span style="font-size:11px;color:var(--text-muted);">📕 上学期:</span>
-                <input id="counselor-file-previous" class="file-path" readonly style="width:130px;font-size:10px;" placeholder="上学期文件..." value="${escapeHtml(prevFile)}">
-                <button class="btn btn-ghost btn-sm" style="padding:4px 8px;font-size:10px;" onclick="cImportFile('previous')">选择</button>
-                <button class="btn btn-ghost btn-sm" style="padding:4px 6px;font-size:9px;" onclick="cImportFile('extra')" title="添加历史学期">+ 历史</button>
-                <span id="counselor-semester-indicator" style="font-size:9px;color:var(--accent-secondary);${cSemesters.length?'':'display:none;'}">${cSemesters.length?'📅 '+cSemesters.join(' | '):''}</span>
-            </div>
-            ${!cData.length?`<p style="text-align:center;padding:16px;color:var(--text-muted);">👆 请先导入数据文件，然后使用下方通知工具</p>`:''}
+        <div class="notice-workspace-head">
+            <div><p>高频工作台</p><h2>通知工具</h2><span>准备数据、筛选学生，一次生成规范通知。</span></div>
+            <div class="notice-head-stats"><div><strong>${cData.length||'—'}</strong><span>学生数据</span></div><div><strong>${alertCount}</strong><span>需关注</span></div><div><strong>${failedCount}</strong><span>挂科学生</span></div></div>
         </div>
-        <div class="module-section" style="margin-top:12px;border:1px dashed var(--accent-secondary);background:var(--bg-tertiary);">
-            <h3>📊 学分绩点导入</h3>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">导入原始成绩文件，用于挂科分析和通知中的各科成绩明细</p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                <input id="notice-grade-file" class="file-path" readonly style="flex:1;min-width:200px;font-size:11px;" placeholder="选择学分绩点原始文件(.xlsx)..." value="${cGradeFilePath?cGradeFilePath.split(/[\\\\/]/).pop():''}">
-                <button class="btn btn-secondary btn-sm" onclick="cPickNoticeGradeFile()">📂 选择</button>
-                <button class="btn btn-teal btn-sm" onclick="cAnalyzeNoticeGrade()">🔍 分析</button>
-                <span id="notice-grade-status" style="font-size:10px;color:var(--text-muted);"></span>
-            </div>
+
+        <div class="notice-readiness ${readyCount===2?'complete':''}">
+            <div><span class="notice-ready-icon">${readyCount===2?'✓':'1'}</span><p><strong>数据准备 ${readyCount}/2</strong><small>${readyCount===2?'数据已就绪，可以生成通知':'至少导入本学期综测数据'}</small></p></div>
+            <div class="notice-ready-progress"><span style="width:${readyCount*50}%"></span></div>
         </div>
-        <div class="module-section" style="margin-top:12px;"><h3>📝 家长通知生成器</h3>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
-                <div>
-                    <h4 style="font-size:13px;margin-bottom:8px;">1. 选择目标学生</h4>
-                    <select id="notice-filter" class="select-input" style="width:100%;margin-bottom:8px;"><option value="all">全部学生</option><option value="comp60">综测<60</option><option value="moral60">德育≤60</option><option value="starred">已关注</option><option value="failing">挂科学生(课程)</option><option value="alert">预警等级学生</option></select>
-                    <button class="btn btn-teal btn-sm" onclick="cPreviewNoticeCount()">👁 预览人数</button>
-                    <span id="notice-count" style="font-size:11px;color:var(--text-muted);margin-left:8px;"></span>
-                </div>
-                <div>
-                    <h4 style="font-size:13px;margin-bottom:8px;">2. 选择数据源</h4>
-                    <select id="notice-semester" class="select-input" style="width:100%;"><option value="current">本学期</option>${cPrevData.length?'<option value="previous">上学期</option>':''}${cSemesters.map(s=>`<option value="${s}">${s}</option>`).join('')}</select>
-                </div>
+
+        <section class="notice-step-card">
+            <header><span>01</span><div><h3>准备通知数据</h3><p>综测数据用于筛选学生；成绩单用于补充挂科科目和分数。</p></div></header>
+            <div class="notice-source-grid">
+                <div class="notice-source-item ${cCurrentPath?'ready':''}"><div class="notice-source-title"><span>综</span><div><strong>本学期综测</strong><small>必需 · ${cData.length?cData.length+' 名学生':'尚未导入'}</small></div></div><input id="counselor-file-current" class="file-path" readonly placeholder="选择本学期文件" value="${escapeHtml(curFile)}"><button class="btn ${cCurrentPath?'btn-secondary':'btn-primary'} btn-sm" onclick="cImportFile('current')">${cCurrentPath?'更换文件':'选择文件'}</button></div>
+                <div class="notice-source-item ${cGradeFilePath?'ready':''}"><div class="notice-source-title"><span>绩</span><div><strong>原始成绩单</strong><small>可选 · 用于挂科详情</small></div></div><input id="notice-grade-file" class="file-path" readonly placeholder="选择成绩文件" value="${cGradeFilePath?cGradeFilePath.split(/[\\\\/]/).pop():''}"><div class="notice-source-actions"><button class="btn btn-secondary btn-sm" onclick="cPickNoticeGradeFile()">${cGradeFilePath?'更换':'选择'}</button><button class="btn btn-ghost btn-sm" onclick="cAnalyzeNoticeGrade()">分析成绩</button></div><span id="notice-grade-status" class="notice-inline-status"></span></div>
             </div>
-            <h4 style="font-size:13px;margin:12px 0 8px;">3. 包含的信息（勾选需要的内容）</h4>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px;">
-                ${[['includeBasic','学生基本信息'],['includeGpa','学分绩点'],['includeMoral','德育分'],['includeQuality','素拓分'],['includeComp','综测成绩'],['includeRank','班级排名'],['includeFailed','挂科科目详情（具体科目名+分数）'],['includeAllCourses','全部科目成绩表（需导入成绩单）'],['includeCompare','与班级均值对比'],['includeTrend','学期变化趋势'],['includeComment','辅导员自定义评语']].map(([key,label])=>`<label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="notice-${key}" ${cNoticeOptions[key]?'checked':''} onchange="cNoticeOptions['${key}']=this.checked;cSaveNoticeOptions();${key==='includeComment'?'document.getElementById(\'notice-comment-area\').style.display=this.checked?\'block\':\'none\';':''}"> ${label}</label>`).join('')}
+            <details class="notice-history-files"><summary>历史对比数据 <span>${prevFile||'按需添加'}</span></summary><div><input id="counselor-file-previous" class="file-path" readonly placeholder="上学期文件" value="${escapeHtml(prevFile)}"><button class="btn btn-secondary btn-sm" onclick="cImportFile('previous')">选择上学期</button><button class="btn btn-ghost btn-sm" onclick="cImportFile('extra')">＋ 添加历史学期</button><span class="notice-semester-inline" style="${cSemesters.length?'':'display:none;'}">${cSemesters.length?cSemesters.join(' · '):''}</span></div></details>
+        </section>
+
+        <section class="notice-step-card ${!cData.length?'is-disabled':''}">
+            <header><span>02</span><div><h3>选择通知对象与内容</h3><p>先确定学生范围，再选择需要向家长展示的信息。</p></div></header>
+            <div class="notice-builder-grid">
+                <div class="notice-target-panel"><label>通知对象</label><select id="notice-filter" class="select-input" onchange="cPreviewNoticeCount()"><option value="all">全部学生</option><option value="comp60">综测低于 60 分</option><option value="moral60">德育不高于 60 分</option><option value="starred">已关注学生</option><option value="failing">挂科学生</option><option value="alert">预警等级学生</option></select><div class="notice-audience-preview"><strong id="notice-count">选择后显示人数</strong><span>将为符合条件的学生分别生成通知</span></div><label>数据学期</label><select id="notice-semester" class="select-input"><option value="current">本学期</option>${cPrevData.length?'<option value="previous">上学期</option>':''}${cSemesters.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+                <div class="notice-content-panel"><label>通知包含内容</label><div class="notice-option-grid">${[['includeBasic','基本信息'],['includeConcern','需关注信息'],['includeFailed','挂科科目详情'],['includeGpa','学分绩点'],['includeMoral','德育分'],['includeQuality','素拓分'],['includeComp','综测成绩'],['includeRank','班级排名'],['includeAllCourses','全部课程成绩'],['includeCompare','班级均值对比'],['includeTrend','学期变化趋势'],['includeComment','自定义评语']].map(([key,label])=>`<label class="notice-option"><input type="checkbox" id="notice-${key}" ${cNoticeOptions[key]?'checked':''} onchange="cNoticeOptions['${key}']=this.checked;cSaveNoticeOptions();${key==='includeComment'?'document.getElementById(\'notice-comment-area\').style.display=this.checked?\'block\':\'none\';':''}"><span>${label}</span></label>`).join('')}</div><div id="notice-comment-area" style="display:${cNoticeOptions.includeComment?'block':'none'};"><textarea id="notice-comment" class="input" placeholder="输入统一的辅导员评语……" oninput="cNoticeOptions.commentText=this.value;cSaveNoticeOptions();">${escapeHtml(cNoticeOptions.commentText||'')}</textarea></div><details class="notice-template-editor"><summary>自定义通知文本 <span>开头、结尾和署名</span></summary><div class="notice-template-grid"><label>通知标题<input id="notice-template-title" class="input" value="${escapeHtml(cNoticeTemplate.title)}" oninput="cSaveNoticeTemplate()"></label><label>署名<input id="notice-template-signature" class="input" value="${escapeHtml(cNoticeTemplate.signature)}" oninput="cSaveNoticeTemplate()"></label><label class="wide">开场白<textarea id="notice-template-greeting" class="input" oninput="cSaveNoticeTemplate()">${escapeHtml(cNoticeTemplate.greeting)}</textarea></label><label class="wide">自定义固定段落<textarea id="notice-template-customBlock" class="input" placeholder="可留空" oninput="cSaveNoticeTemplate()">${escapeHtml(cNoticeTemplate.customBlock)}</textarea></label><label class="wide">结尾说明<textarea id="notice-template-closing" class="input" oninput="cSaveNoticeTemplate()">${escapeHtml(cNoticeTemplate.closing)}</textarea></label></div></details></div>
             </div>
-            <div id="notice-comment-area" style="margin-top:8px;display:${cNoticeOptions.includeComment?'block':'none'};"><textarea id="notice-comment" class="input" style="width:100%;height:60px;font-size:12px;" placeholder="自定义评语（可选）..." oninput="cNoticeOptions.commentText=this.value;cSaveNoticeOptions();">${escapeHtml(cNoticeOptions.commentText||'')}</textarea></div>
-            <div style="margin-top:12px;display:flex;gap:8px;">
-                <button class="btn btn-teal btn-sm" onclick="cGenerateNoticeV8()">📝 生成通知文本</button>
-                <button class="btn btn-primary btn-sm" onclick="cExportNoticesV8()">📥 批量导出通知单</button>
-                <button class="btn btn-ghost btn-sm" onclick="cPreviewOneNotice()">👁 预览示例</button>
-            </div>
-            <textarea id="notice-output" class="input" style="width:100%;height:120px;font-size:11px;margin-top:8px;" readonly placeholder="通知内容将显示在这里..."></textarea></div>
-        <div class="module-section" style="margin-top:12px;"><h3>🤖 AI 学生分析</h3>
-            <div style="display:flex;gap:8px;margin-bottom:8px;"><input id="tool-ai-sid" class="input" style="width:160px;" placeholder="学号"><select id="tool-ai-type" class="select-input" style="width:150px;"><option value="full">📋 综合分析</option><option value="strength">💪 突出优势</option><option value="weakness">🔍 存在问题</option><option value="advice">💡 提升建议</option><option value="radar">🎯 雷达分析</option></select><button class="btn btn-teal btn-sm" onclick="cAnalyzeStudent()">分析</button></div>
-            <div id="tool-ai-result" style="font-size:12px;line-height:1.8;padding:12px;background:var(--bg-tertiary);border-radius:var(--radius-md);min-height:60px;color:var(--text-secondary);"></div></div>
-        <div class="module-section" style="margin-top:12px;"><h3>📋 智能分层</h3>
-            <div style="display:flex;gap:8px;margin-bottom:8px;"><select id="tool-group-metric" class="select-input" style="width:120px;"><option value="comp">按综测</option><option value="gpa">按绩点</option></select><button class="btn btn-teal btn-sm" onclick="cGenerateGroups()">分层</button></div><div id="tool-group-result"></div></div>
-        <div class="module-section" style="margin-top:12px;"><h3>📊 深度分析报告</h3><button class="btn btn-teal btn-sm" onclick="cDeepAnalytics()">📈 生成报告</button><div id="tool-analytics-result" style="margin-top:12px;"></div></div>`;
+        </section>
+
+        <section class="notice-step-card notice-output-card ${!cData.length?'is-disabled':''}">
+            <header><span>03</span><div><h3>预览并导出</h3><p>建议先生成预览，确认内容后再批量导出。</p></div><div class="notice-primary-actions"><button class="btn btn-secondary" onclick="cGenerateNoticeV8()">生成预览</button><button class="btn btn-primary" onclick="cExportNoticesV8()">批量导出通知</button></div></header>
+            <textarea id="notice-output" class="notice-output" readonly placeholder="生成后可查看全部通知文本……"></textarea>
+            <div id="notice-student-results" class="notice-student-results"></div>
+        </section>
+
+        <details class="notice-more-tools"><summary><div><strong>更多辅助工具</strong><span>智能分层和深度数据报告</span></div><b>展开</b></summary><div class="notice-tools-grid"><section><h3>智能分层</h3><div class="notice-tool-row"><select id="tool-group-metric" class="select-input"><option value="comp">按综测</option><option value="gpa">按绩点</option></select><button class="btn btn-secondary btn-sm" onclick="cGenerateGroups()">生成分层</button></div><div id="tool-group-result"></div></section><section><h3>深度数据报告</h3><button class="btn btn-secondary btn-sm" onclick="cDeepAnalytics()">生成报告</button><div id="tool-analytics-result"></div></section></div></details>`;
+    if(cData.length)setTimeout(cPreviewNoticeCount,0);
 }
 
 function cPreviewNoticeCount(){const f=document.getElementById('notice-filter')?.value;let t=[];
@@ -771,8 +765,7 @@ async function cAnalyzeStudent(){
         const tl={full:'综合分析报告（学习+品德+素质+趋势+风险，分点列出，含数据对比）',strength:'突出优势（2-3个最突出优势领域）',weakness:'问题诊断（2-3个最需改进的领域及建议）',advice:'提升建议（3条可操作的改进建议）'};
         prompt=`你是辅导员助理。请分析：\n姓名：${d.name}，班级：${d.class}，预警等级：${cAlertLevelLabel(level)}\n绩点：${cFmt(d.gpa)}，德育：${cFmt(d.moral,0)}，素拓：${cFmt(d.quality,1)}，综测：${cFmt(d.comp)}${p?`\n上学期：${cFmt(p.comp)}，变化：${((d.comp||0)-(p.comp||0)>=0?'+':'')+cFmt((d.comp||0)-(p.comp||0))}`:''}\n任务：${tl[aType]||tl.full}`;
     }
-    el.innerHTML='<span style="color:var(--text-muted);">AI 分析中...</span>';
-    try{const resp=await eel.ai_chat(prompt)();el.innerHTML=`<div style="white-space:pre-wrap;">${escapeHtml(resp)}</div>`;}catch(e){el.innerHTML='<span style="color:var(--color-error);">AI服务不可用</span>';}
+    el.innerHTML='<span style="color:var(--text-muted);">该入口已停用，请使用智能分层或深度数据报告。</span>';
 }
 
 function cGenerateGroups(){const metric=document.getElementById('tool-group-metric')?.value||'comp';const sorted=[...cData].sort((a,b)=>(b[metric]||0)-(a[metric]||0));const n=sorted.length;if(!n)return;const a=sorted.slice(0,Math.ceil(n*0.3));const b=sorted.slice(Math.ceil(n*0.3),Math.ceil(n*0.7));const c=sorted.slice(Math.ceil(n*0.7));const el=document.getElementById('tool-group-result');const label=metric==='comp'?'综测':'绩点';el.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;"><div class="module-section" style="border-left:3px solid var(--color-success);"><h4>🟢 A档 (前30%)</h4><p style="font-size:11px;">${a.length}人</p><p style="font-size:10px;color:var(--text-muted);">${a.slice(0,5).map(x=>escapeHtml(x.name)).join('、')}${a.length>5?'等':''}</p></div><div class="module-section" style="border-left:3px solid var(--color-warning);"><h4>🟡 B档</h4><p style="font-size:11px;">${b.length}人</p></div><div class="module-section" style="border-left:3px solid var(--color-error);"><h4>🔴 C档 (后30%)</h4><p style="font-size:11px;">${c.length}人</p></div></div><button class="btn btn-teal btn-sm" onclick="cExportGroups('${metric}')">📥 导出分层Excel</button>`;}
@@ -853,12 +846,16 @@ function cRenderSettings(){
         <div class="module-section"><h3>💾 数据备份</h3><button class="btn btn-teal btn-sm" onclick="cBackupData()">📥 导出备份</button></div>
         <div class="module-section"><h3>📥 数据恢复</h3><button class="btn btn-secondary btn-sm" onclick="cRestoreData()">📤 恢复备份</button></div>
         <div class="module-section"><h3>📈 导出工具</h3><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-teal btn-sm" onclick="cExportAllCurrent()">📋 导出当前数据(${cData.length}条)</button><button class="btn btn-ghost btn-sm" onclick="cExportCompareReport()">📥 导出学期对比报告</button></div></div>
-        <div class="module-section"><h3>🔄 软件更新</h3>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">拿到新版exe后，在这里选择文件即可一键更新，无需卸载重装。</p>
-            <button class="btn btn-teal btn-sm" onclick="checkForUpdates()">📂 选择更新文件</button>
-            <span style="font-size:10px;color:var(--text-muted);margin-left:8px;">当前版本: v${typeof APP_VERSION!=='undefined'?APP_VERSION:'8.0'}</span></div>
+        <div class="module-section app-settings-update"><h3>程序在线更新</h3>
+            <p>启动时自动检查，只下载新版主程序并在校验后重启，不需要重新安装完整环境。</p>
+            <div class="app-settings-update-row"><span>当前版本：v${typeof APP_VERSION!=='undefined'?APP_VERSION:'8.0'}</span><div><button class="btn btn-primary btn-sm" onclick="checkOnlineApplicationUpdate(true)">检查在线更新</button><button class="btn btn-ghost btn-sm" onclick="checkForUpdates()">选择本地 EXE</button></div></div>
+        </div>
+        <div class="module-section kdocs-settings-update"><h3>云表格连接组件</h3>
+            <p>启动时自动检测官方版本，发现新版后由你确认安装，不会改动学生数据或云端表格。</p>
+            <div class="kdocs-settings-update-row"><span id="kdocs-settings-version">${kdocsComponentVersionLabel()}</span><button class="btn btn-secondary btn-sm" onclick="manualCheckKdocsComponentUpdate()">检查组件更新</button></div>
+        </div>
         <div class="module-section"><h3>🌓 外观</h3><p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">当前：${document.documentElement.getAttribute('data-theme')==='light'?'浅色模式':'深色模式'}</p><button class="btn btn-secondary btn-sm" onclick="toggleThemeManual()">切换深浅色</button></div>
-        <div class="module-section"><h3>ℹ️ 关于</h3><div style="font-size:12px;color:var(--text-secondary);line-height:2;"><p><strong>学生综合测评系统</strong> V8.0</p><p>开发者：陈雨昂</p><p>所属：顿河学院团委秘书处</p><p>辅导员工作台 — 全功能数据看板</p><hr style="border-color:var(--border-thin);margin:8px 0;"><p style="font-size:10px;color:var(--text-muted);">登录：${sessionStorage.getItem('eval_user')||'—'} · 角色：辅导员</p></div></div>`;
+        <div class="module-section"><h3>ℹ️ 关于</h3><div style="font-size:12px;color:var(--text-secondary);line-height:2;"><p><strong>学生综合测评系统</strong> V8.0</p><p>开发者：陈雨昂</p><p>所属：顿河学院团委秘书处</p><p>辅导员工作台 — 全功能数据看板</p><hr style="border-color:var(--border-thin);margin:8px 0;"><p style="font-size:10px;color:var(--text-muted);">当前身份：${sessionStorage.getItem('eval_user')||'辅导员'}</p></div></div>`;
     cRenderExtraSemesterList();
 }
 
@@ -921,7 +918,6 @@ function cShowStudentDetail(sid){
                 <div style="max-height:150px;overflow-y:auto;margin-top:4px;">${convos.length===0?'<p style="font-size:10px;color:var(--text-muted);">暂无</p>':convos.map(c=>`<div style="font-size:10px;padding:4px 0;border-bottom:var(--border-thin);"><span style="color:var(--text-muted);">${c.date||''}</span> <strong>${escapeHtml(c.topic||'')}</strong><br>${escapeHtml((c.content||'').slice(0,60))}${(c.content||'').length>60?'...':''} ${c.followUp?`<span style="color:#fdcb6e;">📅${c.followUp}</span>`:''}</div>`).join('')}</div>
                 <button class="btn btn-teal btn-sm" style="margin-top:4px;" onclick="cAddConversation('${escQs(sid)}')">+ 添加</button></div>
             <div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap;">
-                <button class="btn btn-teal btn-sm" onclick="closeModal();switchCounselorTab('notices');setTimeout(()=>{document.getElementById('tool-ai-sid').value='${escQs(sid)}';},300);">🤖 AI分析</button>
                 <button class="btn btn-ghost btn-sm" onclick="cToggleStar('${escQs(sid)}');closeModal();">${starred?'取消':'⭐ 关注'}</button>
                 <button class="btn btn-ghost btn-sm" onclick="const t=prompt('标签：');if(t){if(!cTags['${escQs(sid)}'])cTags['${escQs(sid)}']=[];cTags['${escQs(sid)}'].push(t);localStorage.setItem('counselor_tags',JSON.stringify(cTags));closeModal();showToast('已添加','success');}">🏷️ 标签</button>
                 <button class="btn btn-ghost btn-sm" onclick="cExportStudentReport('${escQs(sid)}');closeModal();">📋 导出报告</button></div></div>`,
@@ -958,61 +954,58 @@ async function cGetStudentCourseData(sid){
     return null;
 }
 
-// Override notice generator to include course data
-const _cGenNoticeOrig=cGenerateNoticeV8;
-cGenerateNoticeV8=async function(){
-    cNoticeOptions.commentText=document.getElementById('notice-comment')?.value||'';cSaveNoticeOptions();
-    const f=document.getElementById('notice-filter')?.value;let t=cData;
-    if(f==='comp60')t=cData.filter(d=>(d.comp||0)<60);
-    else if(f==='moral60')t=cData.filter(d=>(d.moral||0)<=60);
-    else if(f==='starred')t=cData.filter(d=>cStarred[d.id]);
-    else if(f==='failing'){
-        // Use course-level data if available, otherwise fall back to comp<60
-        if(Object.keys(cCourseStudentMap).length>0){
-            t=cData.filter(d=>cCourseStudentMap[d.id]&&cCourseStudentMap[d.id].fail_count>0);
-        }else{
-            t=cData.filter(d=>(d.comp||0)<60);
-        }
-    }
-    else if(f==='alert')t=cData.filter(d=>cGetAlertLevel('comp',d.comp||0)!=='safe');
-    if(!t.length){showToast('没有匹配的学生','warning');return;}
-    const cm={};cDataFull.forEach(x=>{const cls=x.class||'';if(!cm[cls])cm[cls]=[];cm[cls].push(x);});
-    const classAvgs={};for(const[cls,sts]of Object.entries(cm)){classAvgs[cls]={gpa:(sts.reduce((a,b)=>a+(b.gpa||0),0)/sts.length).toFixed(2),moral:(sts.reduce((a,b)=>a+(b.moral||0),0)/sts.length).toFixed(0),comp:(sts.reduce((a,b)=>a+(b.comp||0),0)/sts.length).toFixed(2)};}
+// Modular notice composer: one independent, copyable notice per student.
+function cGetNoticeTargets(){
+    const f=document.getElementById('notice-filter')?.value;let t=[...cData];
+    if(f==='comp60')t=t.filter(d=>(d.comp||0)<60);
+    else if(f==='moral60')t=t.filter(d=>(d.moral||0)<=60);
+    else if(f==='starred')t=t.filter(d=>cStarred[d.id]);
+    else if(f==='failing')t=Object.keys(cCourseStudentMap).length?t.filter(d=>cCourseStudentMap[d.id]?.fail_count>0):t.filter(d=>(d.comp||0)<60);
+    else if(f==='alert')t=t.filter(d=>cGetAlertLevel('comp',d.comp||0)!=='safe');
+    return t;
+}
 
-    // Load course data in parallel (instant from cCourseStudentMap)
-    let courseDataMap={};
-    if(cNoticeOptions.includeFailed||cNoticeOptions.includeAllCourses){
-        const targets=t.slice(0,20);
-        const results=await Promise.all(targets.map(d=>cGetStudentCourseData(d.id)));
-        targets.forEach((d,i)=>{if(results[i])courseDataMap[d.id]=results[i];});
-    }
-
-    let output='';
-    t.slice(0,20).forEach((d,i)=>{const ca=classAvgs[d.class||'']||null;const ranked=[...cDataFull.filter(x=>x.class===d.class)].sort((a,b)=>(b.comp||0)-(a.comp||0));const rank=ranked.findIndex(x=>x.id===d.id)+1;const p=cPrevData.length?cPrevData.find(x=>x.id===d.id):null;
-        const parts=[];
-        if(cNoticeOptions.includeBasic)parts.push(`学生：${d.name||''}，学号${d.id||''}，${d.class||''}`);
-        if(cNoticeOptions.includeGpa)parts.push(`学分绩点：${cFmt(d.gpa)}`);
-        if(cNoticeOptions.includeMoral)parts.push(`德育分：${cFmt(d.moral,0)}`);
-        if(cNoticeOptions.includeQuality)parts.push(`素拓分：${cFmt(d.quality,1)}`);
-        if(cNoticeOptions.includeComp)parts.push(`综测成绩：${cFmt(d.comp)}`);
-        if(cNoticeOptions.includeRank&&rank)parts.push(`班级排名：第${rank}名/共${ranked.length}人`);
-        if(cNoticeOptions.includeCompare&&ca)parts.push(`班级均值：绩点${ca.gpa} / 德育${ca.moral} / 综测${ca.comp}`);
-        if(cNoticeOptions.includeTrend&&p)parts.push(`上学期综测：${cFmt(p.comp)}，变化：${((d.comp||0)-(p.comp||0)>=0?'+':'')+cFmt((d.comp||0)-(p.comp||0))}`);
-        // Course detail
-        const cd=courseDataMap[d.id];
-        if(cNoticeOptions.includeFailed&&cd&&cd.failed_courses&&cd.failed_courses.length>0){
-            const failedDetails=cd.failed_courses.map(cn=>`${cn}(${cd.course_scores[cn]}分)`).join('、');
-            parts.push(`⚠️ 挂科(${cd.fail_count}门)：${failedDetails}`);
-        }else if(cNoticeOptions.includeFailed){parts.push('挂科情况：无');}
-        if(cNoticeOptions.includeAllCourses&&cd&&cd.course_scores){
-            const allCourses=Object.entries(cd.course_scores).map(([cn,sc])=>`${cn}:${sc}分`).join('，');
-            parts.push(`各科成绩：${allCourses}`);
-        }
-        if(cNoticeOptions.includeComment&&cNoticeOptions.commentText)parts.push(`辅导员评语：${cNoticeOptions.commentText}`);
-        output+=`${'='.repeat(45)}\n家长通知 — ${d.name||''}\n${'='.repeat(45)}\n您好！\n\n${parts.join('\n')}\n\n请家长关注学生学业，与学校共同努力。\n\n顿河学院团委秘书处\n\n`;
+async function cBuildModularNotices(){
+    cNoticeOptions.commentText=document.getElementById('notice-comment')?.value||'';cSaveNoticeOptions();cSaveNoticeTemplate();
+    const targets=cGetNoticeTargets();if(!targets.length){showToast('没有匹配的学生','warning');return[];}
+    const cm={};cDataFull.forEach(x=>{const cls=x.class||'';(cm[cls]||(cm[cls]=[])).push(x);});
+    const classAvgs={};for(const[cls,sts]of Object.entries(cm))classAvgs[cls]={gpa:(sts.reduce((a,b)=>a+(b.gpa||0),0)/sts.length).toFixed(2),moral:(sts.reduce((a,b)=>a+(b.moral||0),0)/sts.length).toFixed(0),comp:(sts.reduce((a,b)=>a+(b.comp||0),0)/sts.length).toFixed(2)};
+    const courseDataMap={};
+    if(cNoticeOptions.includeFailed||cNoticeOptions.includeAllCourses){const results=await Promise.all(targets.map(d=>cGetStudentCourseData(d.id)));targets.forEach((d,i)=>{if(results[i])courseDataMap[d.id]=results[i];});}
+    return targets.map(d=>{
+        const modules=[];const ca=classAvgs[d.class||''];const ranked=[...cDataFull.filter(x=>x.class===d.class)].sort((a,b)=>(b.comp||0)-(a.comp||0));const rank=ranked.findIndex(x=>x.id===d.id)+1;const p=cPrevData.find(x=>x.id===d.id);const cd=courseDataMap[d.id];
+        if(cNoticeOptions.includeBasic)modules.push({key:'basic',label:'基本信息',text:`学生：${d.name||''}，学号${d.id||''}，班级${d.class||''}`});
+        if(cNoticeOptions.includeConcern){const rs=[];if((d.comp||0)<cThresholds.comp)rs.push('综合测评成绩偏低');if((d.gpa||0)<cThresholds.gpa)rs.push('学分绩点偏低');if((d.moral||0)<cThresholds.moral)rs.push('德育成绩需要关注');if(cStarred[d.id])rs.push('已列为重点关注学生');modules.push({key:'concern',label:'需关注信息',text:`需关注：${rs.length?rs.join('；'):'当前暂无系统预警项'}`});}
+        if(cNoticeOptions.includeFailed){const failed=cd?.failed_courses||[];modules.push({key:'failed',label:'挂科信息',text:failed.length?`挂科 ${failed.length} 门：${failed.map(cn=>`${cn}（${cd.course_scores?.[cn]??'—'}分）`).join('、')}`:'挂科情况：无'});}
+        if(cNoticeOptions.includeGpa)modules.push({key:'gpa',label:'学分绩点',text:`学分绩点：${cFmt(d.gpa)}`});
+        if(cNoticeOptions.includeMoral)modules.push({key:'moral',label:'德育分',text:`德育分：${cFmt(d.moral,0)}`});
+        if(cNoticeOptions.includeQuality)modules.push({key:'quality',label:'素拓分',text:`素拓分：${cFmt(d.quality,1)}`});
+        if(cNoticeOptions.includeComp)modules.push({key:'comp',label:'综测成绩',text:`综合测评：${cFmt(d.comp)}`});
+        if(cNoticeOptions.includeRank&&rank)modules.push({key:'rank',label:'班级排名',text:`班级排名：第 ${rank} 名，共 ${ranked.length} 人`});
+        if(cNoticeOptions.includeAllCourses&&cd?.course_scores)modules.push({key:'courses',label:'全部课程',text:`各科成绩：${Object.entries(cd.course_scores).map(([n,s])=>`${n} ${s}分`).join('，')}`});
+        if(cNoticeOptions.includeCompare&&ca)modules.push({key:'compare',label:'班级对比',text:`班级均值：绩点 ${ca.gpa}，德育 ${ca.moral}，综测 ${ca.comp}`});
+        if(cNoticeOptions.includeTrend&&p)modules.push({key:'trend',label:'学期趋势',text:`上学期综测 ${cFmt(p.comp)}，本学期变化 ${((d.comp||0)-(p.comp||0)>=0?'+':'')+cFmt((d.comp||0)-(p.comp||0))}`});
+        if(cNoticeOptions.includeComment&&cNoticeOptions.commentText)modules.push({key:'comment',label:'辅导员评语',text:`辅导员评语：${cNoticeOptions.commentText}`});
+        const blocks=[cNoticeTemplate.greeting,...modules.map(m=>m.text),cNoticeTemplate.customBlock,cNoticeTemplate.closing,cNoticeTemplate.signature].filter(Boolean);
+        return{id:d.id,name:d.name||'',className:d.class||'',modules,text:`${cNoticeTemplate.title} — ${d.name||''}\n\n${blocks.join('\n\n')}`};
     });
-    if(t.length>20)output+=`\n... 共${t.length}人，仅显示前20人预览`;
-    document.getElementById('notice-output').value=output;
+}
+
+cGenerateNoticeV8=async function(){
+    cGeneratedNotices=await cBuildModularNotices();if(!cGeneratedNotices.length)return;
+    document.getElementById('notice-output').value=cGeneratedNotices.map(n=>n.text).join('\n\n'+'─'.repeat(36)+'\n\n');
+    const result=document.getElementById('notice-student-results');
+    result.innerHTML=`<div class="notice-result-toolbar"><div><strong>已生成 ${cGeneratedNotices.length} 份通知</strong><span>每位学生均可单独复制</span></div><button class="btn btn-secondary btn-sm" onclick="cCopyAllNotices()">复制全部</button></div>`+cGeneratedNotices.map((n,i)=>`<article class="notice-student-card"><header><div><strong>${escapeHtml(n.name)}</strong><span>${escapeHtml(n.className)} · ${escapeHtml(n.id)}</span></div><button class="btn btn-primary btn-sm" onclick="cCopyStudentNotice(${i})">复制该生通知</button></header><div class="notice-module-tags">${n.modules.map(m=>`<span>${escapeHtml(m.label)}</span>`).join('')}</div><textarea id="notice-student-text-${i}" class="notice-student-text" oninput="cGeneratedNotices[${i}].text=this.value">${escapeHtml(n.text)}</textarea></article>`).join('');
+    result.scrollIntoView({behavior:'smooth',block:'start'});
+};
+
+async function cCopyText(text,success){try{await navigator.clipboard.writeText(text);showToast(success,'success');}catch(e){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast(success,'success');}}
+function cCopyStudentNotice(i){const el=document.getElementById(`notice-student-text-${i}`);if(el)cGeneratedNotices[i].text=el.value;cCopyText(cGeneratedNotices[i]?.text||'',`已复制 ${cGeneratedNotices[i]?.name||'该学生'} 的通知`);}
+function cCopyAllNotices(){cCopyText(cGeneratedNotices.map(n=>n.text).join('\n\n'+'─'.repeat(36)+'\n\n'),'已复制全部通知');}
+
+cExportNoticesV8=async function(){
+    cGeneratedNotices=await cBuildModularNotices();if(!cGeneratedNotices.length)return;
+    const all=cGeneratedNotices.map(n=>n.text).join('\n\n'+'='.repeat(50)+'\n\n');const blob=new Blob([all],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`学生通知_${new Date().toISOString().slice(0,10)}.txt`;a.click();URL.revokeObjectURL(url);showToast(`已导出 ${cGeneratedNotices.length} 份通知`,'success');
 };
 
 // ==================== C. STUDENT REPORT CARD ====================

@@ -8,8 +8,12 @@ __pycache__/
 
 # Virtual environments
 venv/
+venv*/
 .venv/
 env/
+
+# JavaScript dependencies
+node_modules/
 
 # IDE
 .vscode/
@@ -35,6 +39,23 @@ data/custom_thresholds.json
 *.exe
 *.dmg
 *.app
+*.pkg
+
+# Local development and generated artifacts
+.superpowers/
+artifacts/
+example/
+memory/
+output/
+tmp/
+outputs/*/
+outputs/*.png
+outputs/*.zip
+outputs/*.tar.gz
+installer/build_installer*/
+installer/Output*/
+installer/__pycache__/
+tools/__pycache__/
 
 # Logs
 *.log

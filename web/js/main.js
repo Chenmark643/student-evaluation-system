@@ -6,9 +6,13 @@
  * Developer: 陈雨昂 · 顿河学院团委秘书处
  */
 
-const APP_VERSION = '8.0.0';
+const APP_VERSION = '14.0.9';
 let currentModule = 'gpa';
 let inWorkspace = false;
+let kdocsComponentStatus = null;
+let kdocsUpdateBusy = false;
+let applicationUpdateStatus = null;
+let applicationUpdateBusy = false;
 
 // Module state memory — preserves data when switching modules
 const moduleMemory = {
@@ -35,16 +39,7 @@ function initSplashScreen() {
         setTimeout(() => {
             splash.classList.add('hidden');
             setTimeout(() => {
-                // Route based on login state — not unconditionally showWelcome
-                const loggedIn = sessionStorage.getItem('eval_logged_in');
-                const role = sessionStorage.getItem('eval_role');
-                if (loggedIn === '1' && role === 'counselor') {
-                    showCounselorWelcome();
-                } else if (loggedIn === '1') {
-                    showWelcome();
-                } else {
-                    showLoginPage();
-                }
+                showRoleSelection();
             }, 400);
         }, 250);
     }, 1600);
@@ -100,30 +95,26 @@ function showRandomQuote() {
 // ============================================================
 // Time-based Auto Theme
 // ============================================================
+let themeAutoTimer = null;
+
+function applyTheme(theme, persist = false) {
+    const next = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    if (persist) localStorage.setItem('theme_override', next);
+    document.querySelectorAll('.theme-toggle').forEach(btn => {
+        btn.innerHTML = next === 'light' ? '🌙' : '☀️';
+        btn.title = next === 'light' ? '切换到深色模式' : '切换到浅色模式';
+        btn.setAttribute('aria-label', btn.title);
+    });
+}
+
 function detectThemeByTime() {
     const h = new Date().getHours();
     const shouldBeLight = (h >= 6 && h < 18);
-    const current = document.documentElement.getAttribute('data-theme');
-
-    // Check user override
     const saved = localStorage.getItem('theme_override');
-    if (saved) {
-        if (saved === 'light') {
-            document.documentElement.setAttribute('data-theme', 'light');
-        } else {
-            document.documentElement.removeAttribute('data-theme');
-        }
-        return;
-    }
-
-    if (shouldBeLight && current !== 'light') {
-        document.documentElement.setAttribute('data-theme', 'light');
-    } else if (!shouldBeLight && current === 'light') {
-        document.documentElement.removeAttribute('data-theme');
-    }
-
-    // Re-check every 10 minutes
-    setTimeout(detectThemeByTime, 600000);
+    applyTheme(saved === 'light' || saved === 'dark' ? saved : (shouldBeLight ? 'light' : 'dark'));
+    if (themeAutoTimer) clearTimeout(themeAutoTimer);
+    if (!saved) themeAutoTimer = setTimeout(detectThemeByTime, 600000);
 }
 
 // ============================================================
@@ -134,13 +125,140 @@ function startWorking() {
     document.getElementById('module-select-page').style.display = 'flex';
     document.getElementById('app').style.display = 'none';
     document.getElementById('welcome-quote').style.display = 'none';
+    renderTaskCenter();
+}
+
+// ============================================================
+// Evaluation Task Center — UI organization only; scoring logic is untouched.
+// ============================================================
+const TASK_STORAGE_KEY = 'eval_measurement_tasks_v1';
+const ACTIVE_TASK_KEY = 'eval_active_measurement_task';
+
+function getEvaluationTasks() {
+    try {
+        const tasks = JSON.parse(localStorage.getItem(TASK_STORAGE_KEY) || '[]');
+        return Array.isArray(tasks) ? tasks : [];
+    } catch (e) { return []; }
+}
+
+function saveEvaluationTasks(tasks) {
+    localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(tasks));
+}
+
+function ensureEvaluationTask() {
+    let tasks = getEvaluationTasks();
+    if (!tasks.length) {
+        const now = new Date();
+        const year = now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1;
+        tasks = [{
+            id: 'task-' + Date.now(),
+            name: `${year}-${year + 1}学年综合测评`,
+            semester: now.getMonth() >= 7 ? '第一学期' : '第二学期',
+            grade: '全部年级',
+            status: '进行中',
+            createdAt: Date.now()
+        }];
+        saveEvaluationTasks(tasks);
+    }
+    if (!localStorage.getItem(ACTIVE_TASK_KEY)) localStorage.setItem(ACTIVE_TASK_KEY, tasks[0].id);
+    return tasks;
+}
+
+function getTaskModuleState() {
+    const completed = window.CompletionCelebration?.state?.() || {};
+    return Object.fromEntries(['gpa','moral','quality','comprehensive'].map(key => [key, Boolean(completed[key]?.done)]));
+}
+
+function renderTaskCenter() {
+    const container = document.getElementById('task-center-content');
+    if (!container) return;
+    const tasks = ensureEvaluationTask();
+    const activeId = localStorage.getItem(ACTIVE_TASK_KEY);
+    const active = tasks.find(t => t.id === activeId) || tasks[0];
+    const state = getTaskModuleState();
+    const modules = [
+        ['gpa', '01', '学分绩点', '导入成绩并生成绩点结果'],
+        ['moral', '02', '德育测评', '汇总出勤、卫生与评议数据'],
+        ['quality', '03', '素质拓展', '录入加分项目并执行上限管控'],
+        ['comprehensive', '04', '综合测评', '汇总三项结果并生成排名'],
+        ['toolbox', '05', '荣誉资格核验台', '评奖评优申报资格辅助核验']
+    ];
+    const readyCount = Object.values(state).filter(Boolean).length;
+    const progress = readyCount * 25;
+    const history = getHistory().slice(0, 4);
+    const safe = value => String(value || '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+
+    container.innerHTML = `
+        <section class="task-hero-card">
+            <div class="task-hero-main">
+                <div class="task-status-row"><span class="task-live-dot"></span>${safe(active.status)}<span>·</span><span>${safe(active.grade)}</span></div>
+                <h2>${safe(active.name)}</h2>
+                <p>${safe(active.semester)} · 当前任务中的四个模块继续使用原有计算规则</p>
+                <div class="task-progress"><span style="width:${progress}%"></span></div>
+                <small>完成进度 ${progress}% · ${readyCount}/4 项工作已经完成</small>
+            </div>
+            <div class="task-progress-ring" style="--task-progress:${progress * 3.6}deg"><strong>${progress}%</strong><span>任务进度</span></div>
+        </section>
+        <section class="task-center-section">
+            <div class="task-section-heading"><div><span>工作流程</span><h2>继续处理当前任务</h2></div><small>建议按顺序完成，综合测评仍可独立进入</small></div>
+            <div class="task-module-grid">
+                ${modules.map(([key, no, title, desc]) => `
+                    <button class="task-module-card" onclick="enterModule('${key}')">
+                        <span class="task-module-number">${no}</span>
+                        <span class="task-module-copy"><strong>${title}</strong><small>${desc}</small></span>
+                        <span class="task-module-state ${state[key] ? 'ready' : ''}">${key==='toolbox'?'进入审核':(state[key] ? '已完成' : '待开始')}</span>
+                        <span class="task-module-arrow">↗</span>
+                    </button>`).join('')}
+            </div>
+        </section>
+        <div class="task-lower-grid">
+            <section class="task-center-section task-activity-card">
+                <div class="task-section-heading"><div><span>最近动态</span><h2>处理记录</h2></div></div>
+                <div class="task-activity-list">
+                    ${history.length ? history.map(item => `<div><span class="task-activity-icon">✓</span><p><strong>${safe(item.summary || item.module || '完成数据处理')}</strong><small>${item.time ? new Date(item.time).toLocaleString('zh-CN') : '最近'}</small></p></div>`).join('') : '<div class="task-empty-line"><span>暂无处理记录，从上方选择一个模块开始。</span></div>'}
+                </div>
+            </section>
+            <section class="task-center-section task-check-card">
+                <div class="task-section-heading"><div><span>发布前检查</span><h2>结果可信度</h2></div></div>
+                <ul class="task-check-list">
+                    <li><span>1</span>确认导入文件与目标年级一致</li>
+                    <li><span>2</span>在预览中检查缺失、重复与错配</li>
+                    <li><span>3</span>导出前复核任务名称和学期</li>
+                </ul>
+            </section>
+        </div>`;
+}
+
+function openCreateEvaluationTask() {
+    const now = new Date();
+    showModal('新建测评任务', `
+        <div class="task-create-form">
+            <div class="form-group"><label>任务名称</label><input id="task-name-input" class="input" value="${now.getFullYear()}-${now.getFullYear() + 1}学年综合测评"></div>
+            <div class="form-row"><div class="form-group"><label>学期</label><select id="task-semester-input" class="select-input"><option>第一学期</option><option>第二学期</option><option>学年</option></select></div><div class="form-group"><label>年级范围</label><input id="task-grade-input" class="input" placeholder="例如：2025级" value="全部年级"></div></div>
+            <p class="task-create-note">新建任务只整理工作入口，不会修改任何计算公式。</p>
+        </div>`, `<button class="btn btn-ghost" onclick="closeModal()">取消</button><button class="btn btn-primary" onclick="createEvaluationTask()">创建任务</button>`);
+}
+
+function createEvaluationTask() {
+    const name = document.getElementById('task-name-input').value.trim();
+    const semester = document.getElementById('task-semester-input').value;
+    const grade = document.getElementById('task-grade-input').value.trim() || '全部年级';
+    if (!name) { showToast('请输入任务名称', 'warning'); return; }
+    const tasks = getEvaluationTasks();
+    const task = { id: 'task-' + Date.now(), name, semester, grade, status: '进行中', createdAt: Date.now() };
+    tasks.unshift(task);
+    saveEvaluationTasks(tasks);
+    localStorage.setItem(ACTIVE_TASK_KEY, task.id);
+    closeModal();
+    renderTaskCenter();
+    showToast('测评任务已创建', 'success');
 }
 
 // ============================================================
 // Counselor Welcome Page V7.0
 // ============================================================
 function showCounselorWelcome() {
-    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'none';
     document.getElementById('welcome-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'flex';
@@ -218,14 +336,15 @@ function enterModule(moduleName) {
     document.getElementById('module-select-page').style.display = 'none';
     document.getElementById('app').style.display = '';
 
-    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算' };
+    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', toolbox:'荣誉资格核验台', cloud:'学院云协作' };
     document.getElementById('module-title').textContent = titles[moduleName] || moduleName;
 
     // Show persistent widgets in workspace
     showCornerWidgets();
 
-    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive };
+    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace };
     if (renderers[moduleName]) renderers[moduleName]();
+    setTimeout(function() { if (window.refreshEmojis) refreshEmojis(); }, 200);
 
     document.querySelectorAll('.nav-btn[data-module]').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.module === moduleName);
@@ -233,7 +352,6 @@ function enterModule(moduleName) {
 
     initBackground();
     initKeyboard();
-    initAIPanel();
 
     // Restore module state if available
     setTimeout(() => restoreModuleState(moduleName), 200);
@@ -254,6 +372,17 @@ function saveModuleState(moduleName) {
             typeof moralColumnMappings !== 'undefined' ? moralColumnMappings : {}));
         moduleMemory._moralRoster = typeof moralRoster !== 'undefined'
             ? JSON.parse(JSON.stringify(moralRoster)) : {};
+        moduleMemory._moralWorkspaceMode = typeof moralWorkspaceMode !== 'undefined' ? moralWorkspaceMode : 'continue';
+        moduleMemory._moralExistingSource = typeof moralExistingSource !== 'undefined'
+            ? JSON.parse(JSON.stringify({path:moralExistingSource.path || '', mappings:moralExistingSource.mappings || {}, scope_classes:moralExistingSource.scope_classes || []})) : {path:'',mappings:{},scope_classes:[]};
+        moduleMemory._moralVnextItems = typeof moralVnextItems !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralVnextItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})))) : [];
+        moduleMemory._moralFreshItems = typeof moralFreshItems !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralFreshItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})))) : [];
+        moduleMemory._moralSelectedTemplateProjects = typeof moralSelectedTemplateProjects !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralSelectedTemplateProjects)) : null;
+        moduleMemory._moralCloudOutputs = typeof moralCloudOutputs !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralCloudOutputs)) : [];
     }
     if (moduleName === 'quality') {
         moduleMemory._qualityRoster = typeof qualityRoster !== 'undefined'
@@ -276,6 +405,60 @@ function restoreModuleState(moduleName) {
         if (fp.moralOutputDir) {
             const el = document.getElementById('moral-output-dir');
             if (el && !el.value) { el.value = fp.moralOutputDir; el.classList.add('has-file'); }
+        }
+        if (fp.moralVnextOutputDir) {
+            const el = document.getElementById('moral-vnext-output-dir');
+            if (el && !el.value) { el.value = fp.moralVnextOutputDir; el.classList.add('has-file'); }
+        }
+        if (moduleMemory._moralWorkspaceMode && typeof moralWorkspaceMode !== 'undefined') {
+            moralWorkspaceMode = moduleMemory._moralWorkspaceMode;
+            if (typeof moralSetWorkspaceMode === 'function') moralSetWorkspaceMode(moralWorkspaceMode);
+        }
+        if (moduleMemory._moralExistingSource && typeof moralExistingSource !== 'undefined') {
+            moralExistingSource = JSON.parse(JSON.stringify(moduleMemory._moralExistingSource));
+            const name = document.getElementById('moral-existing-name');
+            const meta = document.getElementById('moral-existing-meta');
+            if (name && moralExistingSource.path) name.textContent = moralExistingSource.path.split(/[\\/]/).pop();
+            if (meta && moralExistingSource.path) meta.textContent = '映射已恢复 · 可重新检查';
+            name?.closest('.moral-source-well')?.classList.toggle('has-source', Boolean(moralExistingSource.path));
+        }
+        if (moduleMemory._moralVnextItems && typeof moralVnextItems !== 'undefined') {
+            moralVnextItems = JSON.parse(JSON.stringify(moduleMemory._moralVnextItems));
+            if (typeof moralRenderVnextItems === 'function') moralRenderVnextItems();
+        }
+        if (Object.prototype.hasOwnProperty.call(moduleMemory, '_moralSelectedTemplateProjects') && typeof moralSelectedTemplateProjects !== 'undefined') {
+            moralSelectedTemplateProjects = JSON.parse(JSON.stringify(moduleMemory._moralSelectedTemplateProjects));
+        }
+        if (moduleMemory._moralFreshItems && typeof moralFreshItems !== 'undefined') {
+            moralFreshItems = JSON.parse(JSON.stringify(moduleMemory._moralFreshItems));
+            if (typeof moralRenderFreshItems === 'function') moralRenderFreshItems();
+        }
+        if (moduleMemory._moralCloudOutputs && typeof moralCloudOutputs !== 'undefined') {
+            moralCloudOutputs = JSON.parse(JSON.stringify(moduleMemory._moralCloudOutputs));
+            if (moralCloudOutputs.length && typeof moralLastOutput !== 'undefined') {
+                moralLastOutput = moralCloudOutputs[moralCloudOutputs.length - 1];
+            }
+        }
+        if (moduleMemory._moralVnextScoring) {
+            const scoring = moduleMemory._moralVnextScoring;
+            [['moral-vnext-base',scoring.base],['moral-vnext-min',scoring.min],['moral-vnext-max',scoring.max]].forEach(([id,value]) => {
+                const input = document.getElementById(id);
+                if (input && Number.isFinite(Number(value))) input.value = value;
+            });
+            const basis = document.querySelector(`input[name="moral-continuation-basis"][value="${scoring.basis === 'display' ? 'display' : 'raw'}"]`);
+            if (basis) basis.checked = true;
+            if (typeof moralUpdateBasisCards === 'function') moralUpdateBasisCards();
+        }
+        if (moduleMemory._moralFreshScoring) {
+            const scoring = moduleMemory._moralFreshScoring;
+            [['moral-fresh-base',scoring.base],['moral-fresh-min',scoring.min],['moral-fresh-max',scoring.max]].forEach(([id,value]) => {
+                const input = document.getElementById(id);
+                if (input && Number.isFinite(Number(value))) input.value = value;
+            });
+        }
+        if (typeof moralRefreshReadySummary === 'function') {
+            moralRefreshReadySummary('continue');
+            moralRefreshReadySummary('fresh');
         }
         // Restore ALL_MORAL_HEADERS from persistent memory
         if (moduleMemory._ALL_MORAL_HEADERS && typeof ALL_MORAL_HEADERS !== 'undefined') {
@@ -413,6 +596,7 @@ function backToModuleSelect() {
     document.getElementById('app').style.display = 'none';
     document.getElementById('module-select-page').style.display = 'flex';
     document.getElementById('welcome-page').style.display = 'none';
+    renderTaskCenter();
 }
 
 // ============================================================
@@ -429,9 +613,9 @@ function switchModule(moduleName) {
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.module === moduleName);
     });
-    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', settings: '系统设置' };
+    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', toolbox:'荣誉资格核验台', cloud:'学院云协作', settings: '系统设置' };
     document.getElementById('module-title').textContent = titles[moduleName] || moduleName;
-    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, settings: renderSettings };
+    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace, settings: renderSettings };
     const container = document.getElementById('module-container');
     if (renderers[moduleName]) {
         // Always re-render to get fresh DOM + event handlers, then restore data
@@ -459,7 +643,7 @@ function initNavigation() {
 // Settings
 // ============================================================
 function renderSettings() {
-    const user = sessionStorage.getItem('eval_user') || '未登录';
+    const user = sessionStorage.getItem('eval_user') || '未选择';
     const role = sessionStorage.getItem('eval_role') === 'secretary' ? '秘书处' : '辅导员';
     document.getElementById('module-container').innerHTML = `
         <div class="module-section"><h2>关于</h2>
@@ -486,10 +670,20 @@ function renderSettings() {
             <button class="btn btn-secondary btn-sm" onclick="exportBackup()">💾 备份数据</button>
             <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick="importBackup()">📥 恢复数据</button>
         </div>
-        <div class="module-section"><h3>🔄 软件更新</h3>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">拿到新版exe后，在这里选择文件即可一键更新，无需卸载重装。</p>
-            <button class="btn btn-teal btn-sm" onclick="checkForUpdates()">📂 选择更新文件</button>
-            <span style="font-size:10px;color:var(--text-muted);margin-left:8px;">当前版本: v${APP_VERSION}</span></div>
+        <div class="module-section app-settings-update"><h3>程序在线更新</h3>
+            <p>启动时自动检查。以后发布新版后，使用者可以直接下载、校验并重启更新，不再重复安装完整安装包。</p>
+            <div class="app-settings-update-row">
+                <span>当前版本：v${APP_VERSION}</span>
+                <div><button class="btn btn-primary btn-sm" onclick="checkOnlineApplicationUpdate(true)">检查在线更新</button><button class="btn btn-ghost btn-sm" onclick="checkForUpdates()">选择本地 EXE</button></div>
+            </div>
+        </div>
+        <div class="module-section kdocs-settings-update"><h3>云表格连接组件</h3>
+            <p>程序启动后会自动检测官方版本；发现新版时提醒，由你确认后才安装，不会改动学生数据和云端表格。</p>
+            <div class="kdocs-settings-update-row">
+                <span id="kdocs-settings-version">${kdocsComponentVersionLabel()}</span>
+                <button class="btn btn-secondary btn-sm" onclick="manualCheckKdocsComponentUpdate()">检查组件更新</button>
+            </div>
+        </div>
         <div class="module-section"><h2>帮助</h2>
             <button class="btn btn-ghost btn-sm" onclick="showChangelog()">📋 更新日志</button>
             <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick="showOnboarding()">👋 新手指引</button>
@@ -499,7 +693,7 @@ function renderSettings() {
             <div style="font-size:12px;color:var(--text-secondary);line-height:2;">
                 <p>当前用户: <strong id="settings-current-user">—</strong></p>
                 <p>角色: <strong id="settings-current-role">—</strong></p>
-                <button class="btn btn-secondary btn-sm" onclick="doLogout()">切换用户</button>
+                <button class="btn btn-secondary btn-sm" onclick="doLogout()">切换身份</button>
             </div></div>`;
     // Update user info after render
     setTimeout(() => {
@@ -522,16 +716,276 @@ function doLogout() {
     document.getElementById('welcome-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'none';
-    showLoginPage();
-    showToast('已退出登录', 'info');
+    showRoleSelection();
+    showToast('请选择身份', 'info');
 }
 
 // ============================================================
-// V8.2: Local File Update System
+// Application and Kdocs connector updates
 // ============================================================
 async function autoCheckUpdates() {
-    // Silent - no network check needed for local app
-    // Future: could check a network path if configured
+    const appUpdateShown = await checkOnlineApplicationUpdate(false);
+    if (appUpdateShown) return;
+    try {
+        const status = await eel.kdocs_cli_version_status(false)();
+        kdocsComponentStatus = status;
+        refreshKdocsSettingsVersion();
+        if (!status?.success || !status.update_available) return;
+        if (sessionStorage.getItem('kdocs_cli_update_dismissed') === status.latest_version) return;
+        showKdocsComponentUpdate(status);
+    } catch (error) {
+        // Startup should never be blocked by a temporary network/update error.
+        console.warn('Kdocs connector update check failed:', error);
+    }
+}
+
+async function checkOnlineApplicationUpdate(manual = false) {
+    if (applicationUpdateBusy) return false;
+    if (manual) {
+        applicationUpdateBusy = true;
+        setUpdateModal(
+            '检查程序更新',
+            `<div class="kdocs-update-progress"><span class="kdocs-update-spinner"></span><h3>正在检查在线版本</h3><p>这里只下载很小的版本清单，不会下载完整安装包。</p></div>`,
+            '', true, dismissApplicationUpdate
+        );
+    }
+    try {
+        const status = await eel.app_update_status(Boolean(manual))();
+        applicationUpdateStatus = status;
+        applicationUpdateBusy = false;
+        if (!status?.success) {
+            if (manual) throw new Error(status?.error || '暂时无法连接在线更新服务');
+            return false;
+        }
+        if (status.update_available) {
+            if (!manual && sessionStorage.getItem('app_update_dismissed') === status.latest_version) return false;
+            showApplicationUpdate(status);
+            return true;
+        }
+        if (manual) {
+            setUpdateModal(
+                '程序在线更新',
+                `<div class="kdocs-update-result is-success"><div>✓</div><h3>当前已是最新版</h3><p>已安装 v${escapeHtml(status.current_version || APP_VERSION)}，无需下载任何文件。</p></div>`,
+                `<button class="btn btn-primary" onclick="dismissApplicationUpdate()">完成</button>`,
+                false, dismissApplicationUpdate
+            );
+        }
+        return false;
+    } catch (error) {
+        applicationUpdateBusy = false;
+        if (!manual) {
+            console.warn('Application update check failed:', error);
+            return false;
+        }
+        setUpdateModal(
+            '暂时无法检查程序更新',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>没有获取到在线版本</h3><p>${escapeHtml(error?.message || error)}</p><small>你仍可使用当前版本，或稍后在“系统设置”中重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissApplicationUpdate()">关闭</button><button class="btn btn-primary" onclick="checkOnlineApplicationUpdate(true)">重新检查</button>`,
+            false, dismissApplicationUpdate
+        );
+        return false;
+    }
+}
+
+function showApplicationUpdate(status) {
+    applicationUpdateStatus = status;
+    applicationUpdateBusy = false;
+    const notes = escapeHtml(status.notes || '本次版本包含功能改进与问题修复。').replace(/\r?\n/g, '<br>');
+    const size = Number(status.download_size || 0) / 1024 / 1024;
+    setUpdateModal(
+        '程序在线更新',
+        `<div class="kdocs-update-card app-update-card">
+            <div class="kdocs-update-mark" aria-hidden="true">D</div>
+            <div class="kdocs-update-copy"><span>顿河学院测评软件</span><h3>发现程序新版本</h3><p>只下载主程序文件，不重复下载运行环境和教程，更新完成后会自动重启。</p></div>
+            ${applicationVersionTrack(status)}
+            <div class="app-update-notes"><strong>本次更新</strong><p>${notes}</p></div>
+            <div class="kdocs-update-note">下载约 ${size ? size.toFixed(1) + ' MB' : '45 MB'}，安装前会校验 SHA-256；失败时保留当前版本。</div>
+        </div>`,
+        `<button class="btn btn-secondary" onclick="dismissApplicationUpdate()">稍后提醒</button><button class="btn btn-primary" onclick="downloadAndInstallApplicationUpdate()">下载并更新</button>`,
+        false, dismissApplicationUpdate
+    );
+}
+
+function applicationVersionTrack(status) {
+    return `<div class="kdocs-version-track"><div><small>当前版本</small><strong>v${escapeHtml(status.current_version || APP_VERSION)}</strong></div><span aria-hidden="true">→</span><div class="is-latest"><small>最新版本</small><strong>v${escapeHtml(status.latest_version || '未知')}</strong></div></div>`;
+}
+
+function dismissApplicationUpdate() {
+    if (applicationUpdateBusy) return;
+    if (applicationUpdateStatus?.update_available && applicationUpdateStatus.latest_version) {
+        sessionStorage.setItem('app_update_dismissed', applicationUpdateStatus.latest_version);
+    }
+    document.getElementById('update-overlay').classList.add('hidden');
+}
+
+async function downloadAndInstallApplicationUpdate() {
+    if (applicationUpdateBusy) return;
+    applicationUpdateBusy = true;
+    setUpdateModal(
+        '正在下载程序更新',
+        `<div class="app-update-download"><span class="kdocs-update-spinner"></span><h3 id="app-update-stage" aria-live="polite">正在准备下载</h3><div class="app-update-progress-track" role="progressbar" aria-labelledby="app-update-stage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="app-update-progress-fill"></i></div><strong id="app-update-progress-value">0%</strong><p>下载完成后将自动校验并重启程序。</p></div>`,
+        '', true, dismissApplicationUpdate
+    );
+    try {
+        const started = await eel.app_update_start_download()();
+        if (!started?.success || !started.job_id) throw new Error(started?.error || '无法开始下载');
+        let job = null;
+        while (true) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            job = await eel.app_update_get_progress(started.job_id)();
+            if (!job?.success) throw new Error(job?.error || '无法读取下载进度');
+            const percent = Math.max(0, Math.min(100, Number(job.percent || 0)));
+            const fill = document.getElementById('app-update-progress-fill');
+            const track = fill?.parentElement;
+            const value = document.getElementById('app-update-progress-value');
+            const stage = document.getElementById('app-update-stage');
+            if (fill) fill.style.width = `${percent}%`;
+            if (track) track.setAttribute('aria-valuenow', String(Math.round(percent)));
+            if (value) value.textContent = `${Math.round(percent)}%`;
+            if (stage) stage.textContent = job.stage || '正在下载';
+            if (job.done) break;
+        }
+        if (!job.result?.success || !job.result?.updated) throw new Error(job.result?.error || job.result?.message || '新版没有准备完成');
+        document.getElementById('app-update-stage').textContent = '校验通过，正在重新启动';
+        const installed = await eel.app_update_install(started.job_id)();
+        if (!installed?.success) throw new Error(installed?.error || '无法启动替换程序');
+    } catch (error) {
+        applicationUpdateBusy = false;
+        setUpdateModal(
+            '程序更新未完成',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>当前版本没有被替换</h3><p>${escapeHtml(error?.message || error)}</p><small>已下载的不完整文件会被清理，可以安全重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissApplicationUpdate()">稍后再试</button><button class="btn btn-primary" onclick="downloadAndInstallApplicationUpdate()">重新下载</button>`,
+            false, dismissApplicationUpdate
+        );
+    }
+}
+
+function kdocsComponentVersionLabel() {
+    if (!kdocsComponentStatus?.success) return '版本：启动后自动检测';
+    const current = escapeHtml(kdocsComponentStatus.current_version || '未知');
+    return kdocsComponentStatus.update_available
+        ? `当前 v${current} · 可更新至 v${escapeHtml(kdocsComponentStatus.latest_version)}`
+        : `当前 v${current} · 已是最新版`;
+}
+
+function refreshKdocsSettingsVersion() {
+    const label = document.getElementById('kdocs-settings-version');
+    if (label) label.innerHTML = kdocsComponentVersionLabel();
+}
+
+function setUpdateModal(title, body, footer, locked = false, closeHandler = dismissKdocsComponentUpdate) {
+    const overlay = document.getElementById('update-overlay');
+    document.getElementById('update-title').textContent = title;
+    document.getElementById('update-body').innerHTML = body;
+    document.getElementById('update-footer').innerHTML = footer;
+    overlay.classList.toggle('modal-locked', locked);
+    const closeButton = document.getElementById('update-close');
+    closeButton.hidden = locked;
+    closeButton.onclick = closeHandler;
+    overlay.classList.remove('hidden');
+}
+
+function kdocsVersionTrack(status) {
+    return `<div class="kdocs-version-track">
+        <div><small>当前版本</small><strong>v${escapeHtml(status.current_version || '未知')}</strong></div>
+        <span aria-hidden="true">→</span>
+        <div class="is-latest"><small>最新版本</small><strong>v${escapeHtml(status.latest_version || '未知')}</strong></div>
+    </div>`;
+}
+
+function showKdocsComponentUpdate(status) {
+    kdocsComponentStatus = status;
+    kdocsUpdateBusy = false;
+    setUpdateModal(
+        '云表格组件更新',
+        `<div class="kdocs-update-card">
+            <div class="kdocs-update-mark" aria-hidden="true">W</div>
+            <div class="kdocs-update-copy">
+                <span>金山文档连接组件</span>
+                <h3>发现可用的新版本</h3>
+                <p>新版用于保持云表格接口兼容。更新只替换本机连接组件，不会改动学生数据、模板或已同步的云表格。</p>
+            </div>
+            ${kdocsVersionTrack(status)}
+            <div class="kdocs-update-note">安装期间请暂时不要同步云表格，通常几十秒即可完成。</div>
+        </div>`,
+        `<button class="btn btn-secondary" onclick="dismissKdocsComponentUpdate()">稍后提醒</button>
+         <button class="btn btn-primary" onclick="installKdocsComponentUpdate()">立即更新</button>`
+    );
+}
+
+function dismissKdocsComponentUpdate() {
+    if (kdocsUpdateBusy) return;
+    if (kdocsComponentStatus?.update_available && kdocsComponentStatus.latest_version) {
+        sessionStorage.setItem('kdocs_cli_update_dismissed', kdocsComponentStatus.latest_version);
+    }
+    document.getElementById('update-overlay').classList.add('hidden');
+}
+
+async function manualCheckKdocsComponentUpdate() {
+    if (kdocsUpdateBusy) return;
+    kdocsUpdateBusy = true;
+    setUpdateModal(
+        '检查组件更新',
+        `<div class="kdocs-update-progress"><span class="kdocs-update-spinner"></span><h3>正在连接官方更新服务</h3><p>请稍候，不会影响当前页面的数据。</p></div>`,
+        '',
+        true, dismissKdocsComponentUpdate
+    );
+    try {
+        const status = await eel.kdocs_cli_version_status(true)();
+        kdocsComponentStatus = status;
+        refreshKdocsSettingsVersion();
+        kdocsUpdateBusy = false;
+        if (!status?.success) throw new Error(status?.error || '暂时无法获取版本信息');
+        if (status.update_available) {
+            showKdocsComponentUpdate(status);
+            return;
+        }
+        setUpdateModal(
+            '云表格组件更新',
+            `<div class="kdocs-update-result is-success"><div>✓</div><h3>当前已是最新版</h3><p>已安装 v${escapeHtml(status.current_version || '未知')}，可以正常使用云表格同步。</p></div>`,
+            `<button class="btn btn-primary" onclick="dismissKdocsComponentUpdate()">完成</button>`
+        );
+    } catch (error) {
+        kdocsUpdateBusy = false;
+        setUpdateModal(
+            '暂时无法检查更新',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>没有获取到版本信息</h3><p>${escapeHtml(error?.message || error)}</p><small>请检查网络连接，稍后可在“系统设置”中重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissKdocsComponentUpdate()">关闭</button>
+             <button class="btn btn-primary" onclick="manualCheckKdocsComponentUpdate()">重新检查</button>`
+        );
+    }
+}
+
+async function installKdocsComponentUpdate() {
+    if (kdocsUpdateBusy) return;
+    kdocsUpdateBusy = true;
+    setUpdateModal(
+        '正在更新云表格组件',
+        `<div class="kdocs-update-progress"><span class="kdocs-update-spinner"></span><h3>正在下载并安装官方版本</h3><p>请保持网络连接，完成前不要关闭程序。</p></div>`,
+        '',
+        true, dismissKdocsComponentUpdate
+    );
+    try {
+        const result = await eel.kdocs_upgrade_cli()();
+        if (!result?.success) throw new Error(result?.error || '组件更新失败');
+        kdocsComponentStatus = result;
+        kdocsUpdateBusy = false;
+        sessionStorage.removeItem('kdocs_cli_update_dismissed');
+        refreshKdocsSettingsVersion();
+        setUpdateModal(
+            '云表格组件更新',
+            `<div class="kdocs-update-result is-success"><div>✓</div><h3>${result.updated === false ? '当前已是最新版' : '更新完成'}</h3><p>云表格连接组件现为 v${escapeHtml(result.current_version || result.latest_version || '最新')}，无需重启即可继续使用。</p></div>`,
+            `<button class="btn btn-primary" onclick="dismissKdocsComponentUpdate()">完成</button>`
+        );
+    } catch (error) {
+        kdocsUpdateBusy = false;
+        setUpdateModal(
+            '组件更新失败',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>这次没有更新成功</h3><p>${escapeHtml(error?.message || error)}</p><small>原有组件和数据不会被删除，可以稍后重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissKdocsComponentUpdate()">稍后再试</button>
+             <button class="btn btn-primary" onclick="installKdocsComponentUpdate()">重新更新</button>`
+        );
+    }
 }
 
 async function checkForUpdates() {
@@ -562,22 +1016,21 @@ function showChangelog() {
             <h4 style="color:var(--accent-primary);margin:8px 0;">v8.0.0 — 2026.06.07 🎉</h4>
             <p>📅 <strong>多学期追踪</strong>：支持导入多个历史学期，追踪长期趋势</p>
             <p>📉 <strong>单学期成绩分析</strong>：班级对比、挂科率排名、课程挂科率、成绩分布图</p>
-            <p>📧 <strong>家长通知单</strong>：一键批量生成家长通知，AI辅助撰写</p>
+            <p>📧 <strong>家长通知单</strong>：依据成绩数据一键批量生成规范通知</p>
             <p>💬 <strong>谈话记录管理</strong>：学生详情页添加谈话记录，支持日期+主题+内容+跟进</p>
             <p>⚠️ <strong>多级预警体系</strong>：安全→关注→预警→危险→严重 五级分层</p>
             <p>🏫 <strong>班级对比排行</strong>：总览页班级综测排行，大屏展示班级维度</p>
-            <p>🤖 <strong>结构化AI分析</strong>：雷达图分析、多维评分、对比班级均值</p>
             <p>🔍 <strong>智能文件检测</strong>：自动识别文件名中的学期、年级、专业</p>
             <p>📊 <strong>深度数据看板</strong>：标准差分析、综测分布、年级对比</p>
             <p>🎨 <strong>UI全面升级</strong>：斑马纹表格、空状态设计、卡片入场动画、多级颜色标识</p>
             <hr style="border-color:var(--border-thin);margin:8px 0;">
             <h4 style="color:var(--accent-primary);margin:8px 0;">v6.1.0 — 2026.06.06</h4>
             <p>辅导员工作台：5标签(总览/学生/预警/工具/设置)、双文件导入、对比图表、进步榜、大屏展示</p>
-            <p>🔐 多用户登录、结果预览编辑、持久记忆、快捷键、AI DeepSeek集成</p>
+            <p>🔐 多用户登录、结果预览编辑、持久记忆与快捷键</p>
             <hr style="border-color:var(--border-thin);margin:8px 0;">
             <p><strong>v2.3.0</strong> — 记忆功能、Logo常驻、名言轮播、分专业年级导出、德育增强</p>
             <p><strong>v2.2.0</strong> — 首页重设计、时间问候(中俄英)、自动主题切换</p>
-            <p><strong>v2.0.0</strong> — 数据匹配重写、AI集成、新手指引</p>
+            <p><strong>v2.0.0</strong> — 数据匹配重写与新手指引</p>
             <p><strong>v1.0.0</strong> — 首个正式版本 · 陈雨昂</p>
         </div>`, `<button class="btn btn-primary btn-sm" onclick="closeModal()">关闭</button>`);
 }
@@ -648,13 +1101,10 @@ function initBackground() {
 function initThemeToggle() {
     const h = document.getElementById('header'); if (!h) return;
     const btn = document.createElement('button'); btn.className = 'theme-toggle';
-    btn.title = '切换主题'; btn.innerHTML = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀';
+    btn.title = '切换主题'; btn.innerHTML = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀️';
     btn.onclick = () => {
         const cur = document.documentElement.getAttribute('data-theme');
-        const next = cur === 'light' ? null : 'light';
-        if (next) { document.documentElement.setAttribute('data-theme', 'light'); localStorage.setItem('theme_override', 'light'); }
-        else { document.documentElement.removeAttribute('data-theme'); localStorage.setItem('theme_override', 'dark'); }
-        btn.innerHTML = next ? '🌙' : '☀';
+        applyTheme(cur === 'light' ? 'dark' : 'light', true);
     };
     h.querySelector('.header-actions').insertBefore(btn, h.querySelector('.header-actions').firstChild);
 }
@@ -667,11 +1117,6 @@ function initKeyboard() {
             if (inWorkspace) switchModule(mods[parseInt(e.key) - 1]);
         }
     });
-}
-
-function getModuleAIPrompt(m) {
-    const p = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算' };
-    return `我正在使用${p[m]||''}模块。请帮我分析：`;
 }
 
 // ============================================================
@@ -692,6 +1137,23 @@ function saveAllToMemory() {
         moralSelectedColumns: safeGet(() => moralSelectedColumns, null),
         ALL_MORAL_HEADERS: safeGet(() => ALL_MORAL_HEADERS, null),
         moralExportGradeFilter: safeGet(() => moralExportGradeFilter, 'all'),
+        moralWorkspaceMode: safeGet(() => moralWorkspaceMode, 'continue'),
+        moralExistingSource: safeGet(() => ({path:moralExistingSource.path || '', mappings:moralExistingSource.mappings || {}, scope_classes:moralExistingSource.scope_classes || []}), {path:'',mappings:{},scope_classes:[]}),
+        moralVnextItems: safeGet(() => moralVnextItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})), []),
+        moralFreshItems: safeGet(() => moralFreshItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})), []),
+        moralSelectedTemplateProjects: safeGet(() => moralSelectedTemplateProjects === null ? null : [...moralSelectedTemplateProjects], null),
+        moralCloudOutputs: safeGet(() => [...moralCloudOutputs], []),
+        moralVnextScoring: {
+            base: Number(document.getElementById('moral-vnext-base')?.value ?? 115),
+            min: Number(document.getElementById('moral-vnext-min')?.value ?? 0),
+            max: Number(document.getElementById('moral-vnext-max')?.value ?? 115),
+            basis: document.querySelector('input[name="moral-continuation-basis"]:checked')?.value || 'raw',
+        },
+        moralFreshScoring: {
+            base: Number(document.getElementById('moral-fresh-base')?.value ?? 80),
+            min: Number(document.getElementById('moral-fresh-min')?.value ?? 0),
+            max: Number(document.getElementById('moral-fresh-max')?.value ?? 115),
+        },
         // Quality module
         qualityRoster: safeGet(() => qualityRoster, {}),
         qualityData: safeGet(() => qualityData, {}),
@@ -703,6 +1165,7 @@ function saveAllToMemory() {
         // File inputs (restore on enter)
         moralRosterPath: document.getElementById('moral-roster-file')?.value || '',
         moralOutputDir: document.getElementById('moral-output-dir')?.value || '',
+        moralVnextOutputDir: document.getElementById('moral-vnext-output-dir')?.value || '',
         qualityRosterPath: document.getElementById('quality-roster-file')?.value || '',
         qualityOutputDir: document.getElementById('quality-output-dir')?.value || '',
         gpaOutputDir: safeGet(() => document.getElementById('gpa-output-dir')?.value, ''),
@@ -736,6 +1199,22 @@ function restoreAllFromMemory() {
         if (data.moralSelectedColumns) moduleMemory._moralSelectedColumns = data.moralSelectedColumns;
         if (data.ALL_MORAL_HEADERS) moduleMemory._ALL_MORAL_HEADERS = data.ALL_MORAL_HEADERS;
         if (data.moralExportGradeFilter) moduleMemory._moralExportGradeFilter = data.moralExportGradeFilter;
+        if (data.moralWorkspaceMode) moduleMemory._moralWorkspaceMode = data.moralWorkspaceMode;
+        if (data.moralExistingSource) moduleMemory._moralExistingSource = data.moralExistingSource;
+        if (data.moralVnextItems) moduleMemory._moralVnextItems = data.moralVnextItems;
+        if (data.moralVnextScoring) moduleMemory._moralVnextScoring = data.moralVnextScoring;
+        if (data.moralFreshItems) moduleMemory._moralFreshItems = data.moralFreshItems;
+        if (Object.prototype.hasOwnProperty.call(data, 'moralSelectedTemplateProjects')) moduleMemory._moralSelectedTemplateProjects = data.moralSelectedTemplateProjects;
+        if (data.moralFreshScoring) moduleMemory._moralFreshScoring = data.moralFreshScoring;
+        if (data.moralCloudOutputs) {
+            moduleMemory._moralCloudOutputs = data.moralCloudOutputs;
+            if (typeof moralCloudOutputs !== 'undefined') {
+                moralCloudOutputs = JSON.parse(JSON.stringify(data.moralCloudOutputs));
+                if (moralCloudOutputs.length && typeof moralLastOutput !== 'undefined') {
+                    moralLastOutput = moralCloudOutputs[moralCloudOutputs.length - 1];
+                }
+            }
+        }
         if (data.qualityRoster) moduleMemory._qualityRoster = data.qualityRoster;
         if (data.qualityData) moduleMemory._qualityData = data.qualityData;
         if (data.qualityThresholds) moduleMemory._qualityThresholds = data.qualityThresholds;
@@ -743,8 +1222,10 @@ function restoreAllFromMemory() {
 
         // Restore file paths on next module enter
         moduleMemory._filePaths = {
+            gpaOutputDir: data.gpaOutputDir || '',
             moralRosterPath: data.moralRosterPath || '',
             moralOutputDir: data.moralOutputDir || '',
+            moralVnextOutputDir: data.moralVnextOutputDir || '',
             qualityRosterPath: data.qualityRosterPath || '',
             qualityOutputDir: data.qualityOutputDir || '',
             compOutputDir: data.compOutputDir || '',
@@ -773,7 +1254,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Modal click-outside-to-close
     document.addEventListener('click', function(e) {
-        if (e.target.classList.contains('modal-overlay') && !e.target.closest('.modal-card')) {
+        if (e.target.classList.contains('modal-overlay') && !e.target.classList.contains('modal-locked') && !e.target.closest('.modal-card')) {
             e.target.classList.add('hidden');
         }
     });
@@ -782,7 +1263,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {
             document.querySelectorAll('.modal-overlay:not(.hidden)').forEach(ov => {
-                if (!ov.id.includes('preview') && !ov.id.includes('stats')) {
+                if (!ov.classList.contains('modal-locked') && !ov.id.includes('preview') && !ov.id.includes('stats')) {
                     ov.classList.add('hidden');
                 }
             });
@@ -803,53 +1284,33 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ============================================================
-// V3.0: Multi-User Login
+// Identity selection — local desktop app, no account verification required
 // ============================================================
-const USERS = {
-    admin:      { pwd: 'admin123',  name: '管理员',    role: 'secretary' },
-    mishuchu:   { pwd: 'dunhe521',  name: '秘书处',    role: 'secretary' },
-    fudaoyuan:  { pwd: 'sdjtu521',  name: '辅导员',    role: 'counselor' },
-};
-
-function showLoginPage() {
+function showRoleSelection() {
     document.getElementById('splash-screen').classList.add('hidden');
     document.getElementById('welcome-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
-    document.getElementById('login-page').style.display = 'flex';
-    document.getElementById('login-error').style.display = 'none';
-    // Restore last role
-    const lastRole = localStorage.getItem('last_login_role');
-    if (lastRole) document.getElementById('login-role').value = lastRole;
+    document.getElementById('module-select-page').style.display = 'none';
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'flex';
+    inWorkspace = false;
 }
 
-function doLogin() {
-    const username = document.getElementById('login-username').value.trim();
-    const password = document.getElementById('login-password').value;
-    const role = document.getElementById('login-role').value;
-    const errEl = document.getElementById('login-error');
-
-    if (!username || !password) {
-        errEl.textContent = '请输入用户名和密码'; errEl.style.display = 'block'; return;
-    }
-
-    const user = USERS[username];
-    if (!user || user.pwd !== password || user.role !== role) {
-        errEl.textContent = '用户名、密码或角色错误'; errEl.style.display = 'block'; return;
-    }
-
+function selectRole(role) {
+    if (role !== 'secretary' && role !== 'counselor') return;
+    const roleName = role === 'secretary' ? '秘书处' : '辅导员';
     sessionStorage.setItem('eval_logged_in', '1');
-    sessionStorage.setItem('eval_user', username);
+    sessionStorage.setItem('eval_user', roleName);
     sessionStorage.setItem('eval_role', role);
-    localStorage.setItem('last_login_role', role);  // Remember for next time
-    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'none';
 
     if (role === 'counselor') {
         showCounselorWelcome();
     } else {
         showWelcome();
     }
-    showToast(`欢迎，${user.name}！`, 'success');
+    showToast(`欢迎进入${roleName}端`, 'success');
 }
 
 // ============================================================
@@ -1031,7 +1492,7 @@ function initKeyboardShortcuts() {
 // ============================================================
 function showWelcome() {
     document.getElementById('welcome-page').style.display = 'flex';
-    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('role-selection-page').style.display = 'none';
     document.getElementById('counselor-page').style.display = 'none';
     document.getElementById('counselor-welcome-page').style.display = 'none';
     document.getElementById('module-select-page').style.display = 'none';
@@ -1040,7 +1501,7 @@ function showWelcome() {
     updateGreeting();
     showRandomQuote();
     detectThemeByTime();
-    document.getElementById('college-logo').src = 'college-logo.png';
+    document.getElementById('college-logo').src = 'college-logo-v2.png';
     // Show quick stats
     const hist = getHistory();
     const statsEl = document.getElementById('welcome-stats');
@@ -1058,13 +1519,7 @@ function showWelcome() {
 
 function toggleThemeManual() {
     const cur = document.documentElement.getAttribute('data-theme');
-    if (cur === 'light') {
-        document.documentElement.removeAttribute('data-theme');
-        localStorage.setItem('theme_override', 'dark');
-    } else {
-        document.documentElement.setAttribute('data-theme', 'light');
-        localStorage.setItem('theme_override', 'light');
-    }
+    applyTheme(cur === 'light' ? 'dark' : 'light', true);
     // Refresh settings page button if visible
     const btn = document.getElementById('theme-toggle-btn');
     if (btn) {
@@ -1153,7 +1608,7 @@ async function showStatsDashboard() {
 function sendNotification(title, body) {
     if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') {
-        new Notification(title, { body, icon: 'college-logo.png' });
+        new Notification(title, { body, icon: 'college-mark-v2.png' });
     } else if (Notification.permission !== 'denied') {
         Notification.requestPermission().then(p => {
             if (p === 'granted') new Notification(title, { body });

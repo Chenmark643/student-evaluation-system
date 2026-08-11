@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Excel file reader — supports .xls (via xlrd) and .xlsx (via openpyxl/pandas).
 """

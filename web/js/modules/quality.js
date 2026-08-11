@@ -11,8 +11,23 @@ let qualityData = {};
 let qualityCurrentSid = '';
 let qualityCurrentClass = '';
 let qualityThresholds = [];
-let qualityMode = 'auto';
+let qualityMode = localStorage.getItem('quality_preferred_mode') || 'import';
 let qualitySemiParsed = null;
+let qualityLastOutput = '';
+let qualityAutoRuleByLabel = {};
+let qualityAutoSelectedRule = null;
+
+// V10: Batch bonus state
+let qualityBatchTargets = new Set();
+let qualityBatchSearchTerm = '';
+let qualityBatchClassFilter = '';
+let qualityBatchRules = [];
+let qualityBatchRuleByLabel = {};
+let qualityBatchSelectedRule = null;
+let qualityBatchIndividualScores = {};
+let qualityRecognitionRows = [];
+let qualityRecognitionManagedTargets = new Set();
+let qualityRecognitionMatchIndex = -1;
 
 // V9.0: Material Import state
 let qualityImportTree = null;
@@ -26,8 +41,25 @@ let qualityViewerStudent = null;
 let qualityImportRosterMap = {};
 
 const QUALITY_DEFAULT_THRESHOLD_NAMES = new Set([
-    '社会实践类上限', '学生工作类上限', '技能证书类上限',
+    '比赛志愿服务每学期上限', '学院活动参与每学期上限', '寒暑假社会实践上限',
+    '技能培训与证书上限', '学生干部任职取最高', '新生班主任助理取最高',
 ]);
+const QUALITY_FALLBACK_THRESHOLDS = [
+    {name:'比赛志愿服务每学期上限',max:2,categories:['比赛志愿服务类'],mode:'sum'},
+    {name:'学院活动参与每学期上限',max:1,categories:['学院活动参与类'],mode:'sum'},
+    {name:'寒暑假社会实践上限',max:2,categories:['寒暑假实践类'],mode:'sum'},
+    {name:'技能培训与证书上限',max:3,categories:['技能证书类','技能培训'],mode:'sum'},
+    {name:'学生干部任职取最高',max:3,categories:['学生工作类','学生工作','班委测评','组织测评'],mode:'max_item'},
+    {name:'新生班主任助理取最高',max:2,categories:['班主任助理类'],mode:'max_item'},
+];
+
+async function qualityLoadThresholds() {
+    try {
+        const rows = await eel.get_all_thresholds()();
+        if (Array.isArray(rows) && rows.length) return rows;
+    } catch(e) { console.error('加载素拓上限失败，使用内置规则', e); }
+    return QUALITY_FALLBACK_THRESHOLDS.map(row => ({...row, categories:[...row.categories]}));
+}
 
 // ============================================================
 // Render
@@ -36,16 +68,16 @@ async function renderModuleQuality() {
     document.getElementById('module-title').textContent = '素质拓展分计算';
     const c = document.getElementById('module-container');
     c.innerHTML = `
-        <div class="module-section" style="display:flex;align-items:center;justify-content:space-between;">
-            <h2 style="margin:0;"><span class="step-badge">1</span> 导入花名册</h2>
-            <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:11px;color:var(--text-muted);">模式:</span>
-                <button class="btn btn-sm ${qualityMode==='auto'?'btn-teal':'btn-ghost'}" onclick="qualitySwitchMode('auto')" style="padding:4px 12px;font-size:11px;">🤖 自动计算</button>
-                <button class="btn btn-sm ${qualityMode==='manual'?'btn-teal':'btn-ghost'}" onclick="qualitySwitchMode('manual')" style="padding:4px 12px;font-size:11px;">✋ 辅助人工</button>
-                <button class="btn btn-sm ${qualityMode==='import'?'btn-teal':'btn-ghost'}" onclick="qualitySwitchMode('import')" style="padding:4px 12px;font-size:11px;">📦 材料导入</button>
+        <div class="quality-workspace-head">
+            <div><p>素质拓展工作台</p><h2>${qualityMode==='import'?'材料导入与加分':qualityMode==='auto'?'快速录入加分':'表格辅助汇总'}</h2><span>${qualityMode==='import'?'整理学生材料、逐项核验并完成加分':'选择适合当前工作的处理方式'}</span></div>
+            <div class="quality-mode-switch" role="tablist" aria-label="素拓处理模式">
+                <button class="${qualityMode==='import'?'active':''}" onclick="qualitySwitchMode('import')" role="tab" aria-selected="${qualityMode==='import'}"><b>材料导入</b><small>最常使用</small></button>
+                <button class="${qualityMode==='auto'?'active':''}" onclick="qualitySwitchMode('auto')" role="tab" aria-selected="${qualityMode==='auto'}"><b>快速录入</b><small>逐人加分</small></button>
+                <button class="${qualityMode==='manual'?'active':''}" onclick="qualitySwitchMode('manual')" role="tab" aria-selected="${qualityMode==='manual'}"><b>表格汇总</b><small>半成品表</small></button>
             </div>
         </div>
-        <div class="module-section">
+        <div class="module-section quality-roster-card">
+            <div class="quality-section-title"><span>01</span><div><h2>导入学生名单</h2><p>使用学分绩点表建立班级与学生对应关系</p></div></div>
             <div class="file-picker-row">
                 <input id="quality-roster-file" class="file-path" readonly placeholder="选择学分绩点.xlsx 导入班级和学生...">
                 <button class="btn btn-secondary" onclick="pickFile('quality-roster-file','选择学分绩点文件',[['Excel文件','*.xlsx']])">浏览</button>
@@ -60,12 +92,15 @@ async function renderModuleQuality() {
             <div class="form-row" style="margin-bottom:12px;flex-wrap:wrap;">
                 <div class="form-group"><label>班级</label><select id="quality-class-sel" class="select-input" style="width:140px;" onchange="qualityOnClass()"><option value="">-- 班级 --</option></select></div>
                 <div class="form-group"><label>学生</label><select id="quality-student-sel" class="select-input" style="width:160px;" onchange="qualityOnStudent()"><option value="">-- 学生 --</option></select></div>
-                <div class="form-group"><label>加分项目</label><input id="quality-activity" class="input" style="width:180px;" placeholder="输入名称" list="quality-datalist"><datalist id="quality-datalist"></datalist></div>
+                <div class="form-group"><label>项目名称</label><input id="quality-activity" class="input" style="width:180px;" placeholder="填写实际项目" list="quality-project-datalist" oninput="qualityAutoRenderDuplicateHint()"><datalist id="quality-project-datalist"></datalist></div>
+                <div class="form-group"><label>加分规则</label><input id="quality-rule" class="input" style="width:260px;" placeholder="搜索类别、级别或奖项" list="quality-rule-datalist" oninput="qualityOnRuleInput()"><datalist id="quality-rule-datalist"></datalist></div>
                 <div class="form-group"><label>类别</label><select id="quality-cat" class="select-input" style="width:120px;" onchange="qualityOnCat()"></select></div>
-                <div class="form-group"><label>等级</label><select id="quality-grade" class="select-input" style="width:110px;"></select></div>
-                <div class="form-group"><label>分数</label><input id="quality-score" class="input" type="number" style="width:70px;" placeholder="0" step="0.5" min="0"></div>
+                <div class="form-group"><label>等级</label><select id="quality-grade" class="select-input" style="width:110px;" onchange="qualityAutoRenderDuplicateHint()"></select></div>
+                <div class="form-group"><label>分数</label><input id="quality-score" class="input" type="number" style="width:70px;" placeholder="0" step="0.5" min="0" oninput="qualityAutoRenderDuplicateHint()"></div>
                 <button class="btn btn-primary btn-sm" style="align-self:flex-end;" onclick="qualityAdd()">+ 添加</button>
             </div>
+            <div id="quality-auto-cap-hint" class="quality-batch-cap-hint empty" style="margin-bottom:12px;"><span>选择加分规则后显示所在上限组</span><small>项目名称不会被规则模板覆盖。</small></div>
+            <div id="quality-auto-duplicate-hint" class="quality-duplicate-hint" hidden></div>
             <div class="module-section" style="background:var(--bg-tertiary);">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                     <h3 style="font-size:12px;">阈值设置（分数上限）</h3>
@@ -73,13 +108,11 @@ async function renderModuleQuality() {
                 </div>
                 <div id="quality-thresholds-container" class="form-row" style="flex-wrap:wrap;gap:8px;"></div>
             </div>
-            <div style="margin-top:8px;"><button class="btn btn-ghost btn-sm" onclick="qualityAskAI()">🤖 AI助手</button></div>
             <div id="quality-current-view" style="margin-top:12px;font-size:12px;color:var(--text-muted);">请先选择班级和学生</div>
         </div>
         `: qualityMode==='import'?`
-        <div class="module-section" id="quality-import-step2">
-            <h2><span class="step-badge">2</span> 选择班级压缩包</h2>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">💡 选择各班班长发来的ZIP压缩包，系统自动识别班级和学生姓名并解压归档。</p>
+        <div class="module-section quality-import-hero" id="quality-import-step2">
+            <div class="quality-section-title"><span>02</span><div><h2>导入班级材料</h2><p>选择各班提交的 ZIP，系统自动识别班级和学生并归档</p></div><em>高频</em></div>
             <div class="file-picker-row" style="margin-bottom:8px;">
                 <input id="quality-import-zip-display" class="file-path" readonly placeholder="选择班级压缩包(.zip)... 可多选">
                 <button class="btn btn-secondary" onclick="qualityImportPickZips()">📁 浏览选择</button>
@@ -124,6 +157,60 @@ async function renderModuleQuality() {
             <button class="btn btn-ghost btn-sm" id="quality-import-done-btn" onclick="qualityImportMarkDone()" disabled>✅ 完成</button>
             <button class="btn btn-ghost btn-sm" id="quality-import-pending-btn" onclick="qualityImportMarkPending()" disabled>⬜ 待办</button>
         </div>
+        <div class="module-section quality-recognition-section" id="quality-file-recognition-section" style="display:none;">
+            <div class="quality-section-title"><span>04</span><div><h2>从名单文件识别人员</h2><p>导入 Excel，系统识别班级、姓名和学号，并自动勾选可靠匹配</p></div><em>新增</em></div>
+            <div class="quality-recognition-picker">
+                <input id="quality-recognition-file" class="file-path" readonly placeholder="选择素拓加分名单（.xlsx / .xls）…">
+                <button class="btn btn-secondary" onclick="pickFile('quality-recognition-file','选择素拓加分名单',[['Excel文件','*.xlsx;*.xls']])">选择文件</button>
+                <button class="btn btn-teal btn-sm" id="quality-recognition-run" onclick="qualityRecognitionAnalyze()">识别并勾选</button>
+            </div>
+            <div id="quality-recognition-summary" class="quality-recognition-summary"><span>支持标准表头、姓名带次数、班级姓名连写、多工作表和错误表头。</span></div>
+            <div id="quality-recognition-review" class="quality-recognition-review"></div>
+        </div>
+        <div class="module-section quality-batch-section" id="quality-batch-section" style="display:none;">
+            <div class="quality-section-title"><span>05</span><div><h2>确认项目并批量加分</h2><p>项目名称自由填写；规则模板负责带出类别、等级、分数和所在上限组</p></div></div>
+            <div class="quality-batch-rule-panel">
+                <div class="quality-batch-panel-title">① 填写项目并选择加分规则</div>
+                <div class="form-row" style="flex-wrap:wrap;gap:8px;">
+                    <div class="form-group"><label>项目名称</label><input id="qb-activity" class="input" style="width:220px;" placeholder="填写实际项目名称" list="qb-project-datalist"><datalist id="qb-project-datalist"></datalist></div>
+                    <div class="form-group quality-batch-rule-field"><label>加分规则</label><input id="qb-rule" class="input" style="width:290px;" placeholder="搜索类别、级别或奖项" list="qb-rule-datalist" oninput="qualityBatchOnRuleInput()"><datalist id="qb-rule-datalist"></datalist></div>
+                    <div class="form-group"><label>类别</label><select id="qb-cat" class="select-input" style="width:120px;" onchange="qualityBatchOnCat()"></select></div>
+                    <div class="form-group"><label>等级</label><select id="qb-grade" class="select-input" style="width:100px;"></select></div>
+                    <div class="form-group"><label>分数</label><input id="qb-score" class="input" type="number" style="width:70px;" placeholder="0" step="0.5" min="0"></div>
+                    <div class="form-group"><label>分数方式</label><select id="qb-score-mode" class="select-input" style="width:150px;" onchange="qualityBatchScoreModeChanged()"><option value="uniform">统一使用填写分数</option><option value="file">采用文件识别分数</option><option value="individual">逐人调整分数</option></select></div>
+                </div>
+                <div id="qb-cap-hint" class="quality-batch-cap-hint empty"><span>选择加分规则后显示所在上限组</span></div>
+            </div>
+            <div style="display:flex;gap:12px;margin-bottom:12px;">
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:11px;font-weight:600;margin-bottom:6px;">② 搜索并多选学生</div>
+                    <div class="form-row" style="margin-bottom:6px;gap:8px;flex-wrap:wrap;">
+                        <div class="form-group"><label>班级筛选</label><select id="qb-class-filter" class="select-input" style="width:130px;" onchange="qualityBatchFilterClass()"><option value="">全部班级</option></select></div>
+                        <div class="form-group"><label>搜索</label><input id="qb-search" class="input" style="width:160px;" placeholder="姓名/学号..." oninput="qualityBatchSearch()"></div>
+                        <button class="btn btn-ghost btn-sm" style="align-self:flex-end;font-size:10px;" onclick="qualityBatchSelectAllVisible()">全选可见</button>
+                        <button class="btn btn-ghost btn-sm" style="align-self:flex-end;font-size:10px;" onclick="qualityBatchClearSelection()">清空选择</button>
+                    </div>
+                    <div id="qb-student-list" style="max-height:40vh;overflow-y:auto;background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:8px;">
+                        <p style="color:var(--text-muted);text-align:center;padding:12px;">请先导入花名册</p>
+                    </div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-top:4px;" id="qb-selection-count">已选择 0 名学生</div>
+                </div>
+                <div style="flex:1;min-width:0;background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:10px;">
+                    <div style="font-size:11px;font-weight:600;margin-bottom:6px;">③ 预览并确认</div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                        <span style="font-size:10px;color:var(--text-muted);">设置项目和选择学生后刷新</span>
+                        <div style="display:flex;gap:4px;">
+                            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px;" onclick="qualityBatchDeselectDups()">移除确定重复</button>
+                            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 8px;" onclick="qualityBatchRefreshPreview()">刷新预览</button>
+                        </div>
+                    </div>
+                    <div id="qb-preview" style="max-height:35vh;overflow-y:auto;font-size:11px;">
+                        <p style="color:var(--text-muted);text-align:center;padding:12px;">设置加分项目并选择学生后点击刷新预览</p>
+                    </div>
+                    <button class="btn btn-primary" style="width:100%;margin-top:10px;" id="qb-execute-btn" onclick="qualityBatchExecute()" disabled>📋 批量添加 (+0 人)</button>
+                </div>
+            </div>
+        </div>
         `:`
         <div class="module-section" id="quality-manual-section">
             <h2><span class="step-badge">2</span> 导入半成品素拓表</h2>
@@ -139,7 +226,7 @@ async function renderModuleQuality() {
         `}
 
         <div class="module-section">
-            <h2><span class="step-badge">${qualityMode==='import'?'4':'3'}</span> 输出目录</h2>
+            <h2><span class="step-badge">${qualityMode==='import'?'06':'3'}</span> 输出目录</h2>
             <div class="file-picker-row">
                 <input id="quality-output-dir" class="file-path" readonly placeholder="选择输出目录...">
                 <button class="btn btn-secondary" onclick="pickDirectory('quality-output-dir','选择输出目录')">浏览</button>
@@ -148,7 +235,7 @@ async function renderModuleQuality() {
 
         <div class="actions-row" style="margin-top:16px;">
             ${qualityMode==='auto' || qualityMode==='import'?`
-            <button class="btn btn-ghost" onclick="qualityManageMappings()">管理加分项目</button>
+            <button class="btn btn-ghost" onclick="qualityManageMappings()">管理个人项目</button>
             <button class="btn btn-ghost btn-sm" onclick="qualityManageCategories()">管理类别</button>
             `:''}
             ${qualityMode==='import'?`
@@ -167,14 +254,17 @@ async function renderModuleQuality() {
             const cats = await eel.get_quality_categories()();
             const sel = document.getElementById('quality-cat');
             if (sel) cats.forEach(cat => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; sel.appendChild(o); });
-            const mappings = await eel.load_activity_mappings_json()();
-            const dl = document.getElementById('quality-datalist');
-            if (dl) for (const name of Object.keys(mappings)) { const o = document.createElement('option'); o.value = name; dl.appendChild(o); }
+            const [mappings,presets] = await Promise.all([eel.load_activity_mappings_json()(),eel.get_official_quality_presets()()]);
+            const projectList = document.getElementById('quality-project-datalist');
+            if (projectList) Object.entries(mappings||{}).filter(([,row])=>row?.source==='user').forEach(([name]) => { const o = document.createElement('option'); o.value = name; projectList.appendChild(o); });
+            const ruleList = document.getElementById('quality-rule-datalist'); qualityAutoRuleByLabel = {};
+            (presets||[]).forEach(rule=>{const score=Number(rule.score)||0;const label=`${rule.primary_category||rule.category}｜${rule.name}｜+${score.toFixed(score%1?1:0)}`;qualityAutoRuleByLabel[label]=rule;if(ruleList){const option=document.createElement('option');option.value=label;ruleList.appendChild(option);}});
         } catch(e) { console.error(e); }
-        try { qualityThresholds = await eel.get_all_thresholds()() || []; } catch(e) { qualityThresholds = [{name:'社会实践类上限',max:3,categories:['社会实践类']},{name:'学生工作类上限',max:3,categories:['学生工作类'],mode:'max_item'},{name:'技能证书类上限',max:3,categories:['技能证书类']}]; }
+        qualityThresholds = await qualityLoadThresholds();
         qualityRenderThresholds();
+        qualityAutoRenderCapHint();
     } else if (qualityMode === 'import') {
-        try { qualityThresholds = await eel.get_all_thresholds()() || []; } catch(e) { qualityThresholds = [{name:'社会实践类上限',max:3,categories:['社会实践类']},{name:'学生工作类上限',max:3,categories:['学生工作类'],mode:'max_item'},{name:'技能证书类上限',max:3,categories:['技能证书类']}]; }
+        qualityThresholds = await qualityLoadThresholds();
         if (qualityImportBaseDir) { document.getElementById('quality-import-output-dir').value = qualityImportBaseDir; }
         if (Object.keys(qualityRoster).length > 0) {
             const s = document.getElementById('quality-roster-status');
@@ -182,6 +272,10 @@ async function renderModuleQuality() {
         }
         if (qualityImportTree) { qualityImportRenderTree(); const ts = document.getElementById('quality-import-tree-section'); if (ts) ts.style.display = 'block'; }
         qualityImportUpdateButtons();
+        const hasRoster = Object.keys(qualityRoster).length > 0;
+        const rs = document.getElementById('quality-file-recognition-section'); if (rs) rs.style.display = hasRoster ? 'block' : 'none';
+        const bs = document.getElementById('quality-batch-section'); if (bs) bs.style.display = hasRoster ? 'block' : 'none';
+        await qualityBatchInitUI(); qualityBatchRenderStudentList();
     } else {
         if (Object.keys(qualityRoster).length > 0) {
             setTimeout(() => {
@@ -215,6 +309,12 @@ async function qualityImportRoster() {
             document.getElementById('quality-roster-status').textContent = `已导入 ${Object.keys(result).length} 名学生, ${qualityClassOrder.length} 个班级`;
             if (qualityMode === 'manual') qualityManualRenderList();
             if (qualityMode === 'import' && qualityImportTree) { const ts = document.getElementById('quality-import-tree-section'); if (ts) ts.style.display = 'block'; }
+            if (qualityMode === 'import') {
+                const rs = document.getElementById('quality-file-recognition-section'); if (rs) rs.style.display = 'block';
+                const bs = document.getElementById('quality-batch-section'); if (bs) bs.style.display = 'block';
+                qualityBatchTargets = new Set(); qualityRecognitionManagedTargets = new Set();
+                await qualityBatchInitUI(); qualityBatchRenderStudentList(); qualityRecognitionRender();
+            }
             showToast('花名册导入成功', 'success');
         }
     } catch(e) { showToast('导入失败: ' + e, 'error'); }
@@ -233,19 +333,147 @@ function qualityOnClass() {
     qualityRenderCurrent();
 }
 
-function qualityOnStudent() { qualityCurrentSid = document.getElementById('quality-student-sel').value; qualityRenderCurrent(); }
+function qualityOnStudent() { qualityCurrentSid = document.getElementById('quality-student-sel').value; qualityRenderCurrent(); qualityAutoRenderDuplicateHint(); }
+
+function qualityNormalizeDuplicateText(value) {
+    return String(value || '').trim().toLowerCase().replace(/[\s·・_—–\-\/\\，,。.:：;；（）()【】\[\]]+/g, '');
+}
+
+function qualityProjectNameSimilarity(left, right) {
+    const a=qualityNormalizeDuplicateText(left), b=qualityNormalizeDuplicateText(right);
+    if(!a||!b)return 0;if(a===b)return 1;
+    const shorter=a.length<=b.length?a:b, longer=a.length>b.length?a:b;
+    if(longer.includes(shorter))return shorter.length/longer.length;
+    if(shorter.length<2)return 0;
+    const counts=new Map();for(let i=0;i<a.length-1;i++){const pair=a.slice(i,i+2);counts.set(pair,(counts.get(pair)||0)+1);}
+    let overlap=0;for(let i=0;i<b.length-1;i++){const pair=b.slice(i,i+2),count=counts.get(pair)||0;if(count>0){overlap++;counts.set(pair,count-1);}}
+    return (2*overlap)/((a.length-1)+(b.length-1));
+}
+
+function qualityAreProjectNamesSimilar(left, right) {
+    const a=qualityNormalizeDuplicateText(left), b=qualityNormalizeDuplicateText(right);
+    if(!a||!b)return false;if(a===b)return true;
+    const shorter=a.length<=b.length?a:b, longer=a.length>b.length?a:b;
+    if(shorter.length<4)return false;
+    return longer.includes(shorter)||qualityProjectNameSimilarity(a,b)>=0.62;
+}
+
+function qualityDuplicateRelationText(existingItem, incomingItem) {
+    const oldName=existingItem?.activity||'', newName=incomingItem?.activity||incomingItem?.name||'';
+    const oldNorm=qualityNormalizeDuplicateText(oldName), newNorm=qualityNormalizeDuplicateText(newName);
+    if(oldNorm&&oldNorm===newNorm)return '项目名称完全相同';
+    if(qualityAreProjectNamesSimilar(oldName,newName)){
+        const relation=(oldNorm.includes(newNorm)||newNorm.includes(oldNorm))?'名称存在包含关系':'名称高度相似';
+        return `${relation} · ${Math.round(qualityProjectNameSimilarity(oldName,newName)*100)}%`;
+    }
+    return '所选加分规则相同';
+}
+
+function qualityFindDuplicate(existing, candidate) {
+    const activity = qualityNormalizeDuplicateText(candidate.activity || candidate.name);
+    const category = qualityNormalizeDuplicateText(candidate.category);
+    const grade = qualityNormalizeDuplicateText(candidate.grade);
+    const presetId = String(candidate.officialPresetId || candidate.official_preset_id || '');
+    const ruleLabel = qualityNormalizeDuplicateText(candidate.ruleLabel || candidate.rule_label);
+    const score = Number(candidate.score ?? candidate.final ?? 0);
+    const exact = [], possible = [];
+    (existing || []).forEach(item => {
+        const itemActivity=qualityNormalizeDuplicateText(item.activity), exactName=!!activity&&itemActivity===activity;
+        const sameName = exactName || (!!activity&&qualityAreProjectNamesSimilar(item.activity,candidate.activity||candidate.name));
+        const sameRule = (!!presetId && String(item.official_preset_id || '') === presetId) ||
+            (!!ruleLabel && qualityNormalizeDuplicateText(item.rule_label) === ruleLabel);
+        if (!sameName && !sameRule) return;
+        const sameDetails = exactName && qualityNormalizeDuplicateText(item.category) === category &&
+            qualityNormalizeDuplicateText(item.grade) === grade && Number(item.score) === score;
+        (sameDetails ? exact : possible).push(item);
+    });
+    return { level: exact.length ? 'exact' : possible.length ? 'possible' : 'none', exact, possible, matches: exact.concat(possible) };
+}
+
+function qualityDuplicateItemText(item) {
+    return `${item.activity || '未命名项目'} · ${item.category || '未分类'}${item.grade ? ` · ${item.grade}` : ''} · +${Number(item.score || 0).toFixed(2)}分`;
+}
+
+let qualityDuplicateDecisionResolver = null;
+
+function qualityResolveDuplicateDecision(decision) {
+    const resolver = qualityDuplicateDecisionResolver; qualityDuplicateDecisionResolver = null;
+    const overlay = document.getElementById('modal-overlay'); overlay?.classList.remove('modal-locked');
+    closeModal();
+    if (resolver) resolver(decision);
+}
+
+function qualityAskDuplicateResolution({ studentName = '', existingItem, incomingItem, rows = [] }) {
+    if (qualityDuplicateDecisionResolver) qualityResolveDuplicateDecision('keep_existing');
+    const comparisons = rows.length ? rows : [{ info:{ name:studentName }, item:existingItem, incoming:incomingItem }];
+    const visible = comparisons.slice(0, 6);
+    const body = `<div class="quality-duplicate-decision">
+        <div class="quality-duplicate-decision-head"><b>检测到疑似重复加分</b><span>请决定两条记录如何保留。系统不会自动删除。</span></div>
+        <div class="quality-duplicate-compare-list">${visible.map(row => `<div class="quality-duplicate-compare-row">
+            <strong>${escapeHtml(row.info?.name || studentName || '当前学生')}</strong>
+            <div><small>已有记录</small><span>${escapeHtml(qualityDuplicateItemText(row.item || existingItem || {}))}</span></div>
+            <i>⇄</i>
+            <div><small>本次记录</small><span>${escapeHtml(qualityDuplicateItemText(row.incoming || incomingItem || {}))}</span></div>
+            <em>${escapeHtml(qualityDuplicateRelationText(row.item || existingItem || {},row.incoming || incomingItem || {}))}</em>
+        </div>`).join('')}</div>
+        ${comparisons.length > visible.length ? `<p class="quality-duplicate-more">另有 ${comparisons.length - visible.length} 人，将应用同一选择。</p>` : ''}
+        <p class="quality-duplicate-decision-note">“删除旧项”只删除上方对应的一条旧记录；“取消本次”则保留旧记录，不加入本次记录。</p>
+    </div>`;
+    const footer = `<button class="btn btn-ghost btn-sm" onclick="qualityResolveDuplicateDecision('keep_existing')">取消本次，保留旧项</button>
+        <button class="btn btn-secondary btn-sm" onclick="qualityResolveDuplicateDecision('replace')">删除旧项，保留本次</button>
+        <button class="btn btn-primary btn-sm" onclick="qualityResolveDuplicateDecision('keep_all')">全部保留</button>`;
+    showModal(comparisons.length > 1 ? `疑似重复加分 · ${comparisons.length} 人` : '疑似重复加分确认', body, footer);
+    document.getElementById('modal-overlay')?.classList.add('modal-locked');
+    return new Promise(resolve => { qualityDuplicateDecisionResolver = resolve; });
+}
+
+function qualityAutoDuplicateCheck() {
+    if (!qualityCurrentSid) return { level:'none', exact:[], possible:[], matches:[] };
+    return qualityFindDuplicate(qualityData[qualityCurrentSid] || [], {
+        activity: document.getElementById('quality-activity')?.value || '',
+        category: document.getElementById('quality-cat')?.value || '',
+        grade: document.getElementById('quality-grade')?.value || '',
+        score: Number(document.getElementById('quality-score')?.value || 0),
+        officialPresetId: qualityAutoSelectedRule?.id || null,
+        ruleLabel: qualityAutoSelectedRule?.name || '',
+    });
+}
+
+function qualityAutoRenderDuplicateHint() {
+    const box = document.getElementById('quality-auto-duplicate-hint'); if (!box) return;
+    const result = qualityAutoDuplicateCheck();
+    if (result.level === 'none') { box.hidden = true; box.innerHTML = ''; return; }
+    const item = result.matches[0]; box.hidden = false;
+    box.className = `quality-duplicate-hint ${result.level}`;
+    box.innerHTML = `<b>${result.level === 'exact' ? '发现确定重复项' : '发现疑似重复项'}</b><span>已有：${escapeHtml(qualityDuplicateItemText(item))}${result.matches.length > 1 ? `（另有 ${result.matches.length - 1} 项）` : ''}</span><small>${result.level === 'exact' ? '名称、类别、等级和分数均相同，提交时请选择保留方式。' : `${escapeHtml(qualityDuplicateRelationText(item,{activity:document.getElementById('quality-activity')?.value||''}))}，提交时可全部保留或删去其中一条。`}</small>`;
+}
 
 async function qualityOnCat() {
     const cat = document.getElementById('quality-cat').value;
+    if (qualityAutoSelectedRule && cat !== qualityAutoSelectedRule.category) { qualityAutoSelectedRule=null;const ruleInput=document.getElementById('quality-rule');if(ruleInput)ruleInput.value=''; }
     const sel = document.getElementById('quality-grade'); sel.innerHTML = '<option value="">-- 等级 --</option>';
     if (cat) { try { const grades = await eel.get_quality_grades(cat)(); grades.forEach(g => { const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o); }); } catch(e) {} }
-    const activity = document.getElementById('quality-activity').value.trim();
-    if (activity) {
-        try { const sug = await eel.get_activity_suggestions(activity)(); if (sug && sug.category === cat && sug.default_score) { document.getElementById('quality-score').value = sug.default_score; if (sug.default_grade) setTimeout(() => { document.getElementById('quality-grade').value = sug.default_grade; }, 50); } } catch(e) {}
-    }
+    qualityAutoRenderCapHint();
+    qualityAutoRenderDuplicateHint();
 }
 
-function qualityAdd() {
+async function qualityOnRuleInput() {
+    const label=document.getElementById('quality-rule')?.value.trim()||'';const rule=qualityAutoRuleByLabel[label]||null;qualityAutoSelectedRule=rule;
+    if(!rule){qualityAutoRenderCapHint();return;}
+    const cat=document.getElementById('quality-cat');if(cat)cat.value=rule.category;await qualityOnCat();
+    const grade=document.getElementById('quality-grade');if(grade&&rule.grade){if(![...grade.options].some(option=>option.value===rule.grade)){const option=document.createElement('option');option.value=rule.grade;option.textContent=rule.grade;grade.appendChild(option);}grade.value=rule.grade;}
+    const score=document.getElementById('quality-score');if(score)score.value=rule.score;qualityAutoRenderCapHint();qualityAutoRenderDuplicateHint();
+}
+
+function qualityAutoRenderCapHint() {
+    const target=document.getElementById('quality-auto-cap-hint');if(!target)return;const category=document.getElementById('quality-cat')?.value||'';
+    if(!category){target.className='quality-batch-cap-hint empty';target.innerHTML='<span>选择加分规则后显示所在上限组</span><small>项目名称不会被规则模板覆盖。</small>';return;}
+    const rule=qualityThresholds.find(th=>(th.categories||[]).includes(category));
+    if(!rule){target.className='quality-batch-cap-hint no-cap';target.innerHTML=`<div><small>所在上限组</small><strong>无统一上限</strong></div><p>“${escapeHtml(category)}”按材料认定值计入；同一项目重复获奖仍只保留最高项。</p>`;return;}
+    target.className='quality-batch-cap-hint active';target.innerHTML=`<div class="quality-cap-group-card"><span>${rule.mode==='max_item'?'取最高':'累计封顶'}</span><strong>${escapeHtml(rule.name)}</strong><em>${Number(rule.max).toFixed(1)}<small>分上限</small></em><p>${rule.mode==='max_item'?'同组出现多项时只计最高单项':'达到上限后继续保留原始明细，但不再增加有效分'}</p></div>`;
+}
+
+async function qualityAdd() {
     if (!qualityCurrentSid) { showToast('请选择学生', 'warning'); return; }
     const activity = document.getElementById('quality-activity').value.trim();
     const category = document.getElementById('quality-cat').value;
@@ -254,13 +482,22 @@ function qualityAdd() {
     if (!activity) { showToast('请输入项目名称', 'warning'); return; }
     if (!category) { showToast('请选择类别', 'warning'); return; }
     if (score <= 0) { showToast('请输入有效分数', 'warning'); return; }
+    const existing = qualityData[qualityCurrentSid] || [];
+    const duplicate = qualityFindDuplicate(existing, { activity, category, grade, score, officialPresetId:qualityAutoSelectedRule?.id, ruleLabel:qualityAutoSelectedRule?.name });
+    if (duplicate.level !== 'none') {
+        const decision = await qualityAskDuplicateResolution({ studentName:qualityRoster[qualityCurrentSid]?.name || '', existingItem:duplicate.matches[0], incomingItem:{activity,category,grade,score} });
+        if (decision === 'keep_existing') { showToast('已保留原记录，本次加分未加入', 'info'); return; }
+        if (decision === 'replace') { const index=existing.indexOf(duplicate.matches[0]); if(index>=0)existing.splice(index,1); }
+    }
+
     if (!qualityData[qualityCurrentSid]) qualityData[qualityCurrentSid] = [];
-    qualityData[qualityCurrentSid].push({ activity, category, grade, score });
+    qualityData[qualityCurrentSid].push({ activity, category, grade, score, official_preset_id:qualityAutoSelectedRule?.id||null, rule_label:qualityAutoSelectedRule?.name||'', cap_group:qualityAutoSelectedRule?.cap_group||null });
     eel.save_activity_mapping(activity, category, grade, score)();
-    const dl = document.getElementById('quality-datalist');
+    const dl = document.getElementById('quality-project-datalist');
     if (dl && ![...dl.options].some(o => o.value === activity)) { const o = document.createElement('option'); o.value = activity; dl.appendChild(o); }
-    document.getElementById('quality-activity').value = ''; document.getElementById('quality-score').value = '';
+    document.getElementById('quality-activity').value = '';
     qualityRenderCurrent();
+    qualityAutoRenderDuplicateHint();
 }
 
 // ============================================================
@@ -308,9 +545,9 @@ function qualityRenderThresholds() {
     }).join('');
 }
 
-function qualityUpdateThreshold(idx, value) { const val = parseFloat(value) || 0; if (idx >= 0 && idx < qualityThresholds.length) qualityThresholds[idx].max = val; qualityRenderCurrent(); }
+function qualityUpdateThreshold(idx, value) { const val = parseFloat(value) || 0; if (idx >= 0 && idx < qualityThresholds.length) qualityThresholds[idx].max = val; qualityRenderCurrent(); qualityAutoRenderCapHint(); qualityBatchRenderCapHint(); }
 
-async function qualityRemoveThreshold(name) { if (QUALITY_DEFAULT_THRESHOLD_NAMES.has(name)) return; try { qualityThresholds = await eel.remove_custom_threshold_category(name)(); } catch(e) {} qualityRenderThresholds(); qualityRenderCurrent(); }
+async function qualityRemoveThreshold(name) { if (QUALITY_DEFAULT_THRESHOLD_NAMES.has(name)) return; try { qualityThresholds = await eel.remove_custom_threshold_category(name)(); } catch(e) {} qualityRenderThresholds(); qualityRenderCurrent(); qualityAutoRenderCapHint(); qualityBatchRenderCapHint(); }
 
 async function qualityAddThreshold() {
     let allCats = ['文艺活动类','体育类','A类竞赛','B类竞赛','C类竞赛','D类竞赛','学术论文','非学术文章','专利软著','学生工作','荣誉称号','社会实践','技能培训','其他加分'];
@@ -334,7 +571,7 @@ async function qualityConfirmAddThreshold() {
     if (!name) { showToast('请输入上限名称', 'warning'); return; }
     if (cats.length === 0) { showToast('请至少选择一个适用类别', 'warning'); return; }
     if (maxScore <= 0) { showToast('请输入有效的分数上限', 'warning'); return; }
-    try { qualityThresholds = await eel.add_custom_threshold_category(name, maxScore, cats, mode)(); closeModal(); qualityRenderThresholds(); qualityRenderCurrent(); showToast(`已添加「${name}」上限 ${maxScore} 分 (${mode==='max_item'?'取最高':'求和封顶'})`, 'success'); } catch(e) { showToast('添加失败: '+e, 'error'); }
+    try { qualityThresholds = await eel.add_custom_threshold_category(name, maxScore, cats, mode)(); closeModal(); qualityRenderThresholds(); qualityRenderCurrent(); qualityAutoRenderCapHint(); qualityBatchRenderCapHint(); showToast(`已添加「${name}」上限 ${maxScore} 分 (${mode==='max_item'?'取最高':'求和封顶'})`, 'success'); } catch(e) { showToast('添加失败: '+e, 'error'); }
 }
 
 // ============================================================
@@ -342,6 +579,7 @@ async function qualityConfirmAddThreshold() {
 // ============================================================
 function qualityRenderCurrent() {
     const el = document.getElementById('quality-current-view');
+    qualityAutoRenderDuplicateHint();
     if (!qualityCurrentSid) { el.innerHTML = '<p style="color:var(--text-muted);">请先选择班级和学生</p>'; return; }
     const info = qualityRoster[qualityCurrentSid];
     const activities = qualityData[qualityCurrentSid] || [];
@@ -365,9 +603,12 @@ async function qualityExport() {
     const outPath = outputDir + '/素拓分.xlsx';
     const thDict = {}; qualityThresholds.forEach(th => { thDict[th.name] = {max: th.max, categories: th.categories, mode: th.mode || 'sum'}; });
     try {
-        const result = await eel.export_quality_with_roster(qualityRoster, qualityData, outPath, thDict)();
+        if (!MajorScope.requireForExport()) return;
+        const result = await eel.export_quality_with_roster(qualityRoster, qualityData, outPath, thDict, MajorScope.get())();
         if (result.success) {
-            document.getElementById('quality-result-area').innerHTML = `<div class="result-card"><div class="result-stat"><div class="stat-value">${result.student_count}</div><div class="stat-label">学生</div></div><div class="result-stat"><div class="stat-value">${result.class_count}</div><div class="stat-label">班级</div></div><div class="result-actions"><button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output.replace(/\\/g,'\\\\')}')()">📂 打开文件</button></div></div>`;
+            qualityLastOutput = result.output;
+            document.getElementById('quality-result-area').innerHTML = `<div class="result-card"><div class="result-stat"><div class="stat-value">${result.student_count}</div><div class="stat-label">学生</div></div><div class="result-stat"><div class="stat-value">${result.class_count}</div><div class="stat-label">班级</div></div><div class="result-actions"><button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output.replace(/\\/g,'\\\\')}')()">📂 打开文件</button><button data-cloud-sync-id="quality-main" class="btn btn-primary btn-sm" onclick="CloudSync.request('quality-main')">☁ 同步素拓云表</button></div></div>`;
+            CompletionCelebration.mark('quality', result.output);
             showOutputDialog(true, `成功导出 ${result.student_count} 名学生的素拓分数`, [result.output]);
         } else { showOutputDialog(false, result.error || '导出失败'); }
     } catch(e) { showOutputDialog(false, '处理出错: ' + e); }
@@ -377,9 +618,9 @@ async function qualityExport() {
 // Activity Mappings Management
 // ============================================================
 async function qualityManageMappings() {
-    let mappings = {}; try { mappings = await eel.load_activity_mappings_json()(); } catch(e) {}
-    const entries = Object.entries(mappings);
-    const catOpts = ['文艺活动类','体育类','A类竞赛','B类竞赛','C类竞赛','D类竞赛','学术论文','非学术文章','专利软著','学生工作','荣誉称号','社会实践','技能培训','其他加分'];
+    let mappings = {}, categories = []; try { [mappings,categories] = await Promise.all([eel.load_activity_mappings_json()(),eel.get_quality_categories()()]); } catch(e) {}
+    const entries = Object.entries(mappings).filter(([,info]) => info?.source === 'user');
+    const catOpts = categories.length ? categories : ['文体艺术类','学术竞赛类','学术成果类','学生工作类','社会实践荣誉类','比赛志愿服务类','学院活动参与类','寒暑假实践类','技能证书类','其他加分'];
     let rows = entries.map(([name, info]) => {
         const safe = escapeHtml(name).replace(/[^a-zA-Z0-9一-鿿]/g,'_');
         return `<tr><td><input class="input" style="width:180px;font-size:11px;" value="${escapeHtml(name)}" data-old="${escapeHtml(name)}" id="qm-name-${safe}"></td>
@@ -388,7 +629,7 @@ async function qualityManageMappings() {
             <td><input class="input" type="number" style="width:60px;font-size:11px;" value="${info.default_score||0}" id="qm-score-${safe}"></td>
             <td><button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="qualityDeleteMapping('${escapeHtml(name).replace(/'/g,"\\'")}')">删除</button></td></tr>`;
     }).join('') || '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;">暂无保存的加分项目</td></tr>';
-    showModal('管理加分项目', `<div style="max-height:55vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>名称</th><th>类别</th><th>默认等级</th><th>默认分数</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    showModal('管理个人常用项目', `<p style="font-size:10px;color:var(--text-muted);margin-bottom:8px;">官方规则在“加分规则”中统一维护；这里只管理你保存的实际项目名称和常用设置。</p><div style="max-height:55vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>名称</th><th>类别</th><th>默认等级</th><th>默认分数</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
         <div style="margin-top:8px;padding:8px;background:var(--bg-tertiary);border-radius:var(--radius-sm);"><strong style="font-size:12px;">+ 添加新项目</strong>
         <div class="form-row" style="margin-top:4px;gap:8px;"><input id="qm-new-name" class="input" style="width:160px;font-size:11px;" placeholder="项目名称">
         <select id="qm-new-cat" class="select-input" style="width:110px;font-size:11px;">${catOpts.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
@@ -428,20 +669,20 @@ function qualityAskAI() {
     aiPanelOpen(ctx);
 }
 
-async function qualityManageCategories() { let cats = []; try { cats = await eel.get_quality_categories()(); } catch(e) {} const defCats = ['文艺活动类','体育类','A类竞赛','B类竞赛','C类竞赛','D类竞赛','学术论文','非学术文章','专利软著','学生工作','荣誉称号','社会实践','技能培训','其他加分']; showModal('管理加分类别', `<div style="max-height:50vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>类别</th><th>类型</th><th></th></tr></thead><tbody>${cats.map(c => `<tr><td>${escapeHtml(c)}</td><td>${defCats.includes(c)?'系统默认':'自定义'}</td><td>${defCats.includes(c)?'':`<button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="qualityDeleteCategory('${escapeHtml(c).replace(/'/g,"\\'")}')">删除</button>`}</td></tr>`).join('')}</tbody></table></div><div style="margin-top:8px;display:flex;gap:8px;"><input id="qcat-new-name" class="input" style="flex:1;font-size:11px;" placeholder="新类别名称"><button class="btn btn-teal btn-sm" onclick="qualityAddCategory()">添加</button></div>`, `<button class="btn btn-primary btn-sm" onclick="closeModal();qualitySyncCategories();">关闭</button>`); }
+async function qualityManageCategories() { let cats = []; try { cats = await eel.get_quality_categories()(); } catch(e) {} const defCats = ['文体艺术类','学术竞赛类','学术成果类','学生工作类','班主任助理类','社会实践类','社会实践荣誉类','比赛志愿服务类','学院活动参与类','寒暑假实践类','技能证书类','其他加分']; showModal('管理加分类别', `<div style="max-height:50vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>类别</th><th>类型</th><th></th></tr></thead><tbody>${cats.map(c => `<tr><td>${escapeHtml(c)}</td><td>${defCats.includes(c)?'系统默认':'自定义'}</td><td>${defCats.includes(c)?'':`<button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="qualityDeleteCategory('${escapeHtml(c).replace(/'/g,"\\'")}')">删除</button>`}</td></tr>`).join('')}</tbody></table></div><div style="margin-top:8px;display:flex;gap:8px;"><input id="qcat-new-name" class="input" style="flex:1;font-size:11px;" placeholder="新类别名称"><button class="btn btn-teal btn-sm" onclick="qualityAddCategory()">添加</button></div>`, `<button class="btn btn-primary btn-sm" onclick="closeModal();qualitySyncCategories();">关闭</button>`); }
 
 async function qualityAddCategory() { const name = document.getElementById('qcat-new-name').value.trim(); if (!name) { showToast('请输入类别名称', 'warning'); return; } try { await eel.add_quality_category(name)(); showToast(`已添加「${name}」`, 'success'); qualitySyncCategories(); qualityManageCategories(); } catch(e) { showToast('添加失败: '+e, 'error'); } }
 
 async function qualityDeleteCategory(name) { if (!confirm(`确定删除「${name}」吗？`)) return; try { await eel.remove_quality_category(name)(); showToast('已删除', 'success'); qualitySyncCategories(); qualityManageCategories(); } catch(e) { showToast('删除失败: '+e, 'error'); } }
 
-async function qualitySyncCategories() { try { const cats = await eel.get_quality_categories()(); const sel = document.getElementById('quality-cat'); if (sel) { const cur = sel.value; sel.innerHTML = ''; cats.forEach(cat => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; sel.appendChild(o); }); if (cats.includes(cur)) sel.value = cur; } const mappings = await eel.load_activity_mappings_json()(); const dl = document.getElementById('quality-datalist'); if (dl) { dl.innerHTML = ''; for (const name of Object.keys(mappings)) { const o = document.createElement('option'); o.value = name; dl.appendChild(o); } } } catch(e) { console.error(e); } }
+async function qualitySyncCategories() { try { const cats = await eel.get_quality_categories()(); const sel = document.getElementById('quality-cat'); if (sel) { const cur = sel.value; sel.innerHTML = ''; cats.forEach(cat => { const o = document.createElement('option'); o.value = cat; o.textContent = cat; sel.appendChild(o); }); if (cats.includes(cur)) sel.value = cur; } const mappings = await eel.load_activity_mappings_json()(); const dl = document.getElementById('quality-project-datalist'); if (dl) { dl.innerHTML = ''; for (const [name,row] of Object.entries(mappings||{})) { if(row?.source!=='user')continue;const o = document.createElement('option'); o.value = name; dl.appendChild(o); } } } catch(e) { console.error(e); } }
 
 // ============================================================
 // Mode Switch
 // ============================================================
 function qualitySwitchMode(mode) {
     if (mode !== qualityMode) { for (const sid of Object.keys(qualityData)) { qualityData[sid] = (qualityData[sid] || []).filter(a => !a._manual); if (!qualityData[sid] || qualityData[sid].length === 0) delete qualityData[sid]; } qualitySemiParsed = null; }
-    qualityMode = mode; renderModuleQuality();
+    qualityMode = mode; localStorage.setItem('quality_preferred_mode', mode); renderModuleQuality();
     setTimeout(() => {
         if (Object.keys(qualityRoster).length > 0) {
             const secId = mode==='auto'?'quality-entry-section':mode==='import'?'quality-import-step2':'quality-manual-section';
@@ -449,7 +690,7 @@ function qualitySwitchMode(mode) {
             const st = document.getElementById('quality-roster-status'); if (st) st.textContent = `已导入 ${Object.keys(qualityRoster).length} 名学生, ${qualityClassOrder.length} 个班级`;
             if (mode === 'auto') { const sel = document.getElementById('quality-class-sel'); if (sel) qualityClassOrder.forEach(cls => { if (![...sel.options].some(o => o.value===cls)) { const o = document.createElement('option'); o.value = cls; o.textContent = cls; sel.appendChild(o); } }); qualityRenderThresholds(); }
         }
-        if (mode === 'import') { if (qualityImportTree) { qualityImportRenderTree(); const ts = document.getElementById('quality-import-tree-section'); if (ts) ts.style.display = 'block'; } if (qualityImportBaseDir) { const el = document.getElementById('quality-import-output-dir'); if (el) el.value = qualityImportBaseDir; } qualityImportUpdateButtons(); }
+        if (mode === 'import') { if (qualityImportTree) { qualityImportRenderTree(); const ts = document.getElementById('quality-import-tree-section'); if (ts) ts.style.display = 'block'; } if (qualityImportBaseDir) { const el = document.getElementById('quality-import-output-dir'); if (el) el.value = qualityImportBaseDir; } const hasRoster=Object.keys(qualityRoster).length>0;const rs=document.getElementById('quality-file-recognition-section');if(rs)rs.style.display=hasRoster?'block':'none';const bs=document.getElementById('quality-batch-section');if(bs)bs.style.display=hasRoster?'block':'none';qualityImportUpdateButtons();if(hasRoster){qualityBatchInitUI().then(()=>{qualityBatchRenderStudentList();qualityRecognitionRender();});} }
         if (mode === 'manual' && qualitySemiParsed) { const st = document.getElementById('quality-manual-status'); if (st) st.innerHTML = `<span style="color:var(--color-success);">✅ 已加载 ${qualitySemiParsed.student_count} 名学生</span>`; qualityManualRenderPreview(qualitySemiParsed); }
     }, 100);
 }
@@ -488,7 +729,7 @@ function qualityManualRenderPreview(result) {
     html += `</tbody></table><p style="font-size:10px;color:var(--text-muted);margin-top:4px;">💡 检查无误后点击「导出素拓分数」</p>`; el.innerHTML = html;
 }
 
-function resetModuleQuality() { qualityRoster = {}; qualityClassOrder = []; qualityData = {}; qualityCurrentSid = ''; qualityCurrentClass = ''; qualityMode = 'auto'; qualityImportTree = null; qualityImportBaseDir = ''; qualityImportZipPaths = []; qualityImportSelectedClass = ''; qualityImportSelectedStudent = ''; qualityImportProgress = {}; qualityImportExpanded = {}; qualityViewerStudent = null; qualityImportRosterMap = {}; qualitySemiParsed = null; renderModuleQuality(); }
+function resetModuleQuality() { qualityRoster = {}; qualityClassOrder = []; qualityData = {}; qualityCurrentSid = ''; qualityCurrentClass = ''; qualityMode = 'auto'; qualityImportTree = null; qualityImportBaseDir = ''; qualityImportZipPaths = []; qualityImportSelectedClass = ''; qualityImportSelectedStudent = ''; qualityImportProgress = {}; qualityImportExpanded = {}; qualityViewerStudent = null; qualityImportRosterMap = {}; qualitySemiParsed = null; qualityLastOutput = ''; qualityAutoRuleByLabel = {}; qualityAutoSelectedRule = null; qualityBatchTargets = new Set(); qualityRecognitionRows = []; qualityRecognitionManagedTargets = new Set(); qualityBatchRules = []; qualityBatchRuleByLabel = {}; qualityBatchSelectedRule = null; qualityBatchIndividualScores = {}; renderModuleQuality(); }
 
 // ============================================================
 // Import Mode: Zip Pick & Unzip
@@ -661,23 +902,82 @@ async function qualityImportOpenViewer() {
         fileListEl.innerHTML = html;
     }
     document.getElementById('material-file-preview').innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;">👈 选择左侧文件查看</p>';
-    // Scoring form
-    let cats = ['文艺活动类','体育类','A类竞赛','B类竞赛','C类竞赛','D类竞赛','学术论文','非学术文章','专利软著','学生工作','荣誉称号','社会实践','技能培训','其他加分'];
-    try { const sc = await eel.get_quality_categories()(); if (sc && sc.length) cats = sc; } catch(e) {}
-    let mappingNames = []; try { const m = await eel.load_activity_mappings_json()(); mappingNames = Object.keys(m||{}); } catch(e) {}
-    const sf = document.getElementById('material-scoring-form');
-    sf.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><h4 style="font-size:12px;margin:0;">加分判定</h4><div style="display:flex;gap:4px;"><button class="btn btn-ghost btn-sm" onclick="qualityManageMappings()" style="font-size:10px;padding:2px 6px;">📋 项目</button><button class="btn btn-ghost btn-sm" onclick="qualityManageCategories()" style="font-size:10px;padding:2px 6px;">🏷️ 类别</button><button class="btn btn-ghost btn-sm" onclick="qualityImportShowThresholds()" style="font-size:10px;padding:2px 6px;">⚠️ 上限</button></div></div>
-    <div style="background:var(--bg-tertiary);border-radius:var(--radius-sm);padding:8px;margin-bottom:8px;"><div class="form-group" style="margin-bottom:4px;"><label style="font-size:10px;">加分项目</label><input id="mv-activity" class="input" style="width:100%;font-size:11px;" placeholder="输入名称" list="mv-datalist" oninput="qualityImportOnActivityInput()"><datalist id="mv-datalist">${mappingNames.map(n => `<option value="${escapeHtml(n)}">`).join('')}</datalist></div>
-    <div style="display:flex;gap:6px;"><div class="form-group" style="flex:1;margin-bottom:4px;"><label style="font-size:10px;">类别</label><select id="mv-cat" class="select-input" style="width:100%;font-size:11px;" onchange="qualityImportOnViewerCat()"><option value="">-- 类别 --</option>${cats.map(c => `<option value="${c}">${c}</option>`).join('')}</select></div>
-    <div class="form-group" style="flex:1;margin-bottom:4px;"><label style="font-size:10px;">等级</label><select id="mv-grade" class="select-input" style="width:100%;font-size:11px;"><option value="">-- 等级 --</option></select></div>
-    <div class="form-group" style="width:60px;margin-bottom:4px;"><label style="font-size:10px;">分数</label><input id="mv-score" class="input" type="number" style="width:100%;font-size:11px;" placeholder="0" step="0.5" min="0"></div></div>
-    <button class="btn btn-teal btn-sm" style="width:100%;margin-top:4px;" onclick="qualityImportAddScore()">+ 添加加分项</button></div><div id="mv-thresholds-mini" style="margin-bottom:8px;font-size:10px;color:var(--text-muted);"></div>`;
-    qualityImportRenderThresholdMini();
-    qualityImportRenderViewerScores();
+    let cats = [];
+    try { cats = await eel.get_quality_categories()() || []; } catch(e) {}
+    const sid = qualityImportRosterMap[studentData.key] || studentData.id || studentData.key;
+    const students = [];
+    for (const cls of (qualityImportTree?.classes || [])) {
+        for (const student of (cls.students || [])) {
+            const studentSid = qualityImportRosterMap[student.key] || student.id || student.key;
+            students.push({
+                key: student.key, id: student.id, name: student.name, className: cls.name,
+                fileCount: (student.files || []).length,
+                scoreCount: (qualityData[studentSid] || []).length,
+                status: qualityImportProgress[student.key] || 'pending',
+            });
+        }
+    }
+    await QualityMaterialDrawer.mount({
+        root: document.getElementById('quality-score-drawer'), categories: cats,
+        onStudentChange: qualityImportOpenStudentFromDrawer,
+        onAdd: qualityImportAddDrawerScore,
+        onRemove: qualityImportRemoveDrawerScore,
+    });
+    QualityMaterialDrawer.setStudents(students, studentData.key);
+    QualityMaterialDrawer.setThresholds(qualityThresholds);
+    QualityMaterialDrawer.setStudent(studentData, qualityData[sid] || []);
+    QualityMaterialDrawer.setFiles(studentFiles);
+    QualityMaterialDrawer.open();
     overlay.classList.remove('hidden');
 }
 
-function closeMaterialViewer() { document.getElementById('material-viewer-overlay').classList.add('hidden'); qualityViewerStudent = null; if (qualityImportTree) { qualityImportRenderTree(); qualityImportUpdateProgressBar(); } }
+function qualityImportOpenStudentFromDrawer(studentKey) {
+    for (const cls of (qualityImportTree?.classes || [])) {
+        const student = (cls.students || []).find(s => s.key === studentKey);
+        if (student) {
+            qualityImportSelectedClass = cls.name;
+            qualityImportSelectedStudent = student.key;
+            qualityImportOpenViewer();
+            return;
+        }
+    }
+}
+
+function qualityImportAddDrawerScore(entry) {
+    const sd = qualityViewerStudent; if (!sd) return;
+    const sid = qualityImportRosterMap[sd.key] || sd.id || sd.key;
+    if (!qualityData[sid]) qualityData[sid] = [];
+    qualityData[sid].push(entry);
+    eel.save_activity_mapping(entry.activity, entry.category, entry.grade, entry.base_score)();
+    _qualityImportAutoSave(); qualityImportRenderTree();
+    showToast(`已添加：${entry.activity} +${Number(entry.score).toFixed(2)}分`, 'success');
+}
+
+function qualityImportRemoveDrawerScore(index) {
+    const sd = qualityViewerStudent; if (!sd) return;
+    const sid = qualityImportRosterMap[sd.key] || sd.id || sd.key;
+    if (qualityData[sid]) qualityData[sid].splice(index, 1);
+    QualityMaterialDrawer.setStudent(sd, qualityData[sid] || []);
+    _qualityImportAutoSave(); qualityImportRenderTree();
+}
+
+function qualityImportCompleteCurrentFromDrawer() {
+    const current = qualityViewerStudent; if (!current) return;
+    qualityImportMarkAllFiles(current.key, 'done');
+    const all = [];
+    for (const cls of (qualityImportTree?.classes || [])) for (const student of (cls.students || [])) all.push({cls, student});
+    const currentIndex = all.findIndex(row => row.student.key === current.key);
+    const ordered = all.slice(currentIndex + 1).concat(all.slice(0, currentIndex + 1));
+    const next = ordered.find(row => (qualityImportProgress[row.student.key] || 'pending') !== 'done');
+    if (next) {
+        qualityImportSelectedClass = next.cls.name; qualityImportSelectedStudent = next.student.key;
+        qualityImportOpenViewer(); showToast('已完成，继续审核下一名学生', 'success');
+    } else {
+        closeMaterialViewer(); showToast('本批学生材料已全部审核完成', 'success');
+    }
+}
+
+function closeMaterialViewer() { QualityMaterialDrawer.close(); document.getElementById('material-viewer-overlay').classList.add('hidden'); qualityViewerStudent = null; if (qualityImportTree) { qualityImportRenderTree(); qualityImportUpdateProgressBar(); } }
 
 function qualityImportRenderThresholdMini() {
     const el = document.getElementById('mv-thresholds-mini'); if (!el) return;
@@ -699,7 +999,7 @@ async function qualityImportShowThresholds() {
 function qualityImportUpdateThreshold(idx, value) { const v = parseFloat(value) || 0; if (idx >= 0 && idx < qualityThresholds.length) qualityThresholds[idx].max = v; }
 async function qualityImportDeleteThreshold(idx) { if (idx<0||idx>=qualityThresholds.length) return; const th = qualityThresholds[idx]; if (QUALITY_DEFAULT_THRESHOLD_NAMES.has(th.name)) { showToast('默认阈值不可删除','warning'); return; } try { qualityThresholds = await eel.remove_custom_threshold_category(th.name)(); showToast('已删除','success'); qualityImportShowThresholds(); } catch(e) { showToast('删除失败: '+e,'error'); } }
 async function qualityImportConfirmAddThreshold() { const name = document.getElementById('mvth-new-name').value.trim(), mode = document.getElementById('mvth-new-mode')?.value||'sum', maxScore = parseFloat(document.getElementById('mvth-new-max').value)||0, cats = [...document.querySelectorAll('.mvth-cat-cb:checked')].map(cb=>cb.value); if(!name){showToast('请输入名称','warning');return;} if(cats.length===0){showToast('请选择适用类别','warning');return;} if(maxScore<=0){showToast('请输入有效上限','warning');return;} try{qualityThresholds=await eel.add_custom_threshold_category(name,maxScore,cats,mode)();showToast(`已添加(${mode==='max_item'?'取最高':'求和封顶'})`,'success');qualityImportShowThresholds();}catch(e){showToast('添加失败: '+e,'error');} }
-function qualityImportRefreshAfterThreshold() { qualityImportRenderThresholdMini(); qualityImportRenderViewerScores(); }
+function qualityImportRefreshAfterThreshold() { QualityMaterialDrawer.setThresholds(qualityThresholds); qualityBatchRenderCapHint(); }
 
 async function qualityImportOnActivityInput() { const a = document.getElementById('mv-activity').value.trim(); if(!a)return; try{const s=await eel.get_activity_suggestions(a)();if(s&&s.category){document.getElementById('mv-cat').value=s.category;qualityImportOnViewerCat();setTimeout(()=>{if(s.default_grade)document.getElementById('mv-grade').value=s.default_grade;if(s.default_score)document.getElementById('mv-score').value=s.default_score;},100);}}catch(e){} }
 
@@ -718,11 +1018,36 @@ function qualityImportRenderViewerScores() {
 
 async function qualityImportOnViewerCat() { const cat = document.getElementById('mv-cat').value, sel = document.getElementById('mv-grade'); sel.innerHTML='<option value="">-- 选择等级 --</option>'; if(cat){try{const grades=await eel.get_quality_grades(cat)();grades.forEach(g=>{const o=document.createElement('option');o.value=g;o.textContent=g;sel.appendChild(o);});}catch(e){}} }
 
-async function qualityImportAddScore() { const sd=qualityViewerStudent; if(!sd)return; const activity=document.getElementById('mv-activity').value.trim(),category=document.getElementById('mv-cat').value,grade=document.getElementById('mv-grade').value,score=parseFloat(document.getElementById('mv-score').value)||0; if(!activity){showToast('请输入项目名称','warning');return;} if(!category){showToast('请选择类别','warning');return;} if(score<=0){showToast('请输入有效分数','warning');return;} const sid=qualityImportRosterMap[sd.key]||sd.id||sd.key; if(!qualityData[sid])qualityData[sid]=[]; qualityData[sid].push({activity,category,grade,score}); eel.save_activity_mapping(activity,category,grade,score)(); document.getElementById('mv-activity').value='';document.getElementById('mv-score').value='';qualityImportRenderViewerScores();_qualityImportAutoSave();showToast(`已添加: ${activity} +${score}分`,'success'); }
+async function qualityImportAddScore() {
+    const sd=qualityViewerStudent; if(!sd)return;
+    const activity=document.getElementById('mv-activity').value.trim(), category=document.getElementById('mv-cat').value,
+        grade=document.getElementById('mv-grade').value, score=parseFloat(document.getElementById('mv-score').value)||0;
+    if(!activity){showToast('请输入项目名称','warning');return;} if(!category){showToast('请选择类别','warning');return;} if(score<=0){showToast('请输入有效分数','warning');return;}
+    const sid=qualityImportRosterMap[sd.key]||sd.id||sd.key, existing=(qualityData[sid]||[]);
+    const duplicate=qualityFindDuplicate(existing,{activity,category,grade,score});
+    if(duplicate.level!=='none'){
+        const decision=await qualityAskDuplicateResolution({studentName:sd.name||'',existingItem:duplicate.matches[0],incomingItem:{activity,category,grade,score}});
+        if(decision==='keep_existing'){showToast('已保留原记录，本次加分未加入','info');return;}
+        if(decision==='replace'){const index=existing.indexOf(duplicate.matches[0]);if(index>=0)existing.splice(index,1);}
+    }
+    if(!qualityData[sid])qualityData[sid]=existing;
+    qualityData[sid].push({activity,category,grade,score}); eel.save_activity_mapping(activity,category,grade,score)();
+    document.getElementById('mv-activity').value='';document.getElementById('mv-score').value='';qualityImportRenderViewerScores();_qualityImportAutoSave();showToast('已添加: '+activity+' +'+score+'分','success');
+}
 function qualityImportRemoveScore(sid,index){if(qualityData[sid]){qualityData[sid].splice(index,1);if(qualityData[sid].length===0)delete qualityData[sid];}qualityImportRenderViewerScores();_qualityImportAutoSave();}
 
 async function _qualityImportAutoSave(){if(!qualityImportBaseDir)return;try{await eel.save_quality_data_snapshot(qualityImportBaseDir,qualityData)();}catch(e){console.error(e);}}
-async function _qualityImportRestoreData(){if(!qualityImportBaseDir)return 0;try{const saved=await eel.load_quality_data_snapshot(qualityImportBaseDir)();if(saved&&Object.keys(saved).length>0){for(const[sid,acts]of Object.entries(saved)){if(!qualityData[sid])qualityData[sid]=[];if(qualityData[sid].length===0)qualityData[sid]=acts;}return Object.keys(saved).length;}}catch(e){console.error(e);}return 0;}
+function qualityRepairDrawerDuplicatePairs(activities){
+    const rows=Array.isArray(activities)?activities.slice():[];
+    for(let i=0;i<rows.length-1;i++){
+        const original=rows[i],shadow=rows[i+1];
+        const same=original&&shadow&&original.activity===shadow.activity&&original.category===shadow.category&&(original.grade||'')===(shadow.grade||'')&&Number(original.score)===Number(shadow.score)&&(original.official_preset_id||null)===(shadow.official_preset_id||null);
+        const generatedPair=same&&Object.prototype.hasOwnProperty.call(original,'base_score')&&!Object.prototype.hasOwnProperty.call(shadow,'base_score');
+        if(generatedPair){rows.splice(i+1,1);}
+    }
+    return rows;
+}
+async function _qualityImportRestoreData(){if(!qualityImportBaseDir)return 0;try{const saved=await eel.load_quality_data_snapshot(qualityImportBaseDir)();let repaired=false;if(saved&&Object.keys(saved).length>0){for(const[sid,acts]of Object.entries(saved)){const clean=qualityRepairDrawerDuplicatePairs(acts);if(clean.length!==(acts||[]).length)repaired=true;if(!qualityData[sid])qualityData[sid]=[];if(qualityData[sid].length===0)qualityData[sid]=clean;}if(repaired)await _qualityImportAutoSave();return Object.keys(saved).length;}}catch(e){console.error(e);}return 0;}
 
 // V9.2: Manual save/restore (user-visible JSON)
 async function qualityImportSaveScoreProgress(){
@@ -735,7 +1060,7 @@ async function qualityImportRestoreProgress(){
     try{const path=await eel.select_file([['JSON文件','*.json'],['所有文件','*.*']],'选择加分进度JSON文件')();if(!path)return;
     const result=await eel.load_quality_progress_from_file(path)();if(!result.success){showToast('恢复失败: '+result.error,'error');return;}
     let merged=0;for(const[sid,acts]of Object.entries(result.data)){if(!qualityData[sid])qualityData[sid]=[];const existing=new Set(qualityData[sid].map(a=>`${a.activity}|${a.score}`));for(const act of(acts||[])){const key=`${act.activity}|${act.score}`;if(!existing.has(key)){qualityData[sid].push(act);merged++;}}}
-    await _qualityImportAutoSave();if(qualityViewerStudent)qualityImportRenderViewerScores();qualityImportRenderTree();showToast(`✅ 进度已恢复: ${result.student_count} 名学生, ${result.total_items} 条加分 (新增 ${merged} 条)`,'success');}catch(e){showToast('恢复失败: '+e,'error');}
+    await _qualityImportAutoSave();if(qualityViewerStudent){const sid=qualityImportRosterMap[qualityViewerStudent.key]||qualityViewerStudent.id||qualityViewerStudent.key;QualityMaterialDrawer.setStudent(qualityViewerStudent,qualityData[sid]||[]);QualityMaterialDrawer.setThresholds(qualityThresholds);}qualityImportRenderTree();showToast(`✅ 进度已恢复: ${result.student_count} 名学生, ${result.total_items} 条加分 (新增 ${merged} 条)`,'success');}catch(e){showToast('恢复失败: '+e,'error');}
 }
 
 // ============================================================
@@ -878,4 +1203,639 @@ async function qualityImportOpenFolder(){
     const restored=await _qualityImportRestoreData();if(Object.keys(qualityRoster).length>0)qualityImportMatchRoster();
     qualityImportRenderTree();qualityImportUpdateProgressBar();showToast(`已加载: ${result.classes.length} 个班级`+(restored>0?`，恢复 ${restored} 人评分数据`:''),'success');
     }catch(e){showToast('加载失败: '+e,'error');}
+}
+
+// ============================================================
+// Excel roster recognition before batch bonus
+// ============================================================
+async function qualityRecognitionAnalyze() {
+    const input = document.getElementById('quality-recognition-file');
+    const button = document.getElementById('quality-recognition-run');
+    const summary = document.getElementById('quality-recognition-summary');
+    const path = input ? input.value.trim() : '';
+    if (!path) { showToast('请先选择要识别的 Excel 名单', 'warning'); return; }
+    if (!Object.keys(qualityRoster).length) { showToast('请先导入学生花名册', 'warning'); return; }
+    if (button) { button.disabled = true; button.textContent = '正在识别…'; }
+    if (summary) summary.innerHTML = '<span class="quality-recognition-working">正在扫描工作表并与花名册匹配…</span>';
+    try {
+        const result = await eel.recognize_quality_bonus_file(path, qualityRoster)();
+        if (!result?.success) { showToast(result?.error || '名单识别失败', 'error'); if (summary) summary.innerHTML = `<span class="bad">${escapeHtml(result?.error||'名单识别失败')}</span>`; return; }
+        qualityRecognitionRows = result.rows || [];
+        qualityBatchIndividualScores = {};
+        qualityRecognitionSyncTargets();
+        qualityRecognitionRender(result.filename, result.sheets_scanned);
+        showToast(`已识别并自动勾选 ${result.summary?.selected || 0} 人`, 'success');
+    } catch (error) {
+        if (summary) summary.innerHTML = `<span class="bad">识别失败：${escapeHtml(String(error))}</span>`;
+        showToast('名单识别失败: ' + error, 'error');
+    } finally {
+        if (button) { button.disabled = false; button.textContent = '重新识别'; }
+    }
+}
+
+function qualityRecognitionCounts() {
+    const counts = { matched:0, review:0, unmatched:0, duplicate:0, selected:0 };
+    qualityRecognitionRows.forEach(row => { if (counts[row.status] !== undefined) counts[row.status]++; if (row.selected && row.matched_sid) counts.selected++; });
+    return counts;
+}
+
+function qualityRecognitionRender(filename, sheetsScanned) {
+    const summary = document.getElementById('quality-recognition-summary');
+    const review = document.getElementById('quality-recognition-review');
+    if (!summary || !review) return;
+    if (!qualityRecognitionRows.length) {
+        summary.innerHTML = '<span>支持标准表头、姓名带次数、班级姓名连写、多工作表和错误表头。</span>';
+        review.innerHTML = '';
+        return;
+    }
+    const counts = qualityRecognitionCounts();
+    const fileLabel = filename || document.getElementById('quality-recognition-file')?.value.split(/[/\\]/).pop() || '识别文件';
+    summary.innerHTML = `<div class="quality-recognition-file"><b>${escapeHtml(fileLabel)}</b><small>${sheetsScanned ? `扫描 ${sheetsScanned} 个有效工作表 · ` : ''}已自动同步到下方批量名单</small></div><div class="quality-recognition-metrics"><span class="ok"><b>${counts.matched}</b>已匹配</span><span class="warn"><b>${counts.review}</b>待确认</span><span class="bad"><b>${counts.unmatched}</b>未匹配</span><span><b>${counts.duplicate}</b>重复</span><span class="selected"><b>${counts.selected}</b>已勾选</span></div>`;
+    const rows = qualityRecognitionRows.map((row, index) => {
+        const match = qualityRecognitionRenderMatchCell(row, index);
+        const statusLabel = row.status==='matched' ? (row.confidence==='high'?'可靠匹配':row.confidence==='manual'?'人工匹配':'唯一姓名') : row.status==='review'?'待人工确认':row.status==='duplicate'?'重复行':'未匹配';
+        const canSelect = !!row.matched_sid && row.status !== 'duplicate';
+        const actionLabel = row.matched_sid ? '改配' : (row.candidates||[]).length ? '查看候选' : '搜索学生';
+        return `<tr class="status-${row.status}"><td><input type="checkbox" ${row.selected?'checked':''} ${canSelect?'':'disabled'} onchange="qualityRecognitionToggle(${index},this.checked)"></td><td><b>${escapeHtml(row.sheet)}</b><small>第 ${row.row} 行</small></td><td><strong>${escapeHtml(row.raw_name||'—')}</strong><small>${escapeHtml(row.raw_class||'未提供班级')}${row.raw_student_id?' · '+escapeHtml(row.raw_student_id):''}</small></td><td>${row.file_score==null?'<span class="quality-no-score">未识别</span>':`<b>${Number(row.file_score).toFixed(2)}</b>`}</td><td>${match}</td><td><span class="quality-recognition-status ${row.status}">${statusLabel}</span><small title="${escapeHtml(row.reason||'')}">${escapeHtml(row.reason||'')}</small></td><td><button class="btn btn-ghost btn-sm quality-match-action" onclick="qualityRecognitionEditMatch(${index})">${actionLabel}</button></td></tr>`;
+    }).join('');
+    review.innerHTML = `<div class="quality-recognition-actions"><span>可靠匹配已自动勾选；待确认和未匹配项会显示最相似候选。</span><div><button class="btn btn-ghost btn-sm" onclick="qualityRecognitionSelectReliable()">勾选可靠项</button><button class="btn btn-ghost btn-sm" onclick="qualityRecognitionClear()">清空勾选</button></div></div><div class="quality-recognition-table-wrap"><table class="data-table quality-recognition-table"><thead><tr><th>选</th><th>来源</th><th>文件内容</th><th>文件分</th><th>花名册匹配 / 候选</th><th>状态</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function qualityRecognitionSimilarity(candidate) {
+    const value = Number(candidate?.similarity ?? candidate?.confidence ?? 0);
+    return Math.max(0, Math.min(100, Math.round(value * 100)));
+}
+
+function qualityRecognitionSidToken(sid) {
+    return encodeURIComponent(String(sid || '')).replace(/'/g, '%27');
+}
+
+function qualityRecognitionRenderMatchCell(row, index) {
+    if (row.matched_sid) {
+        return `<div class="quality-current-match"><strong>${escapeHtml(row.matched_name)}</strong><small>${escapeHtml(row.matched_class)} · ${escapeHtml(row.matched_sid)}</small></div>`;
+    }
+    const candidates = (row.candidates || []).slice(0, 2);
+    if (!candidates.length) return '<span class="quality-no-match">暂无候选，可搜索花名册</span>';
+    return `<div class="quality-candidate-preview"><small class="quality-candidate-kicker">最相似候选</small>${candidates.map(candidate => {
+        const token = qualityRecognitionSidToken(candidate.sid);
+        return `<button type="button" class="quality-candidate-inline" onclick="qualityRecognitionUseCandidate(${index},'${token}')" title="采用该候选"><span><b>${escapeHtml(candidate.name)}</b><small>${escapeHtml(candidate.class)} · ${escapeHtml(candidate.sid)}</small></span><em>${qualityRecognitionSimilarity(candidate)}%</em></button>`;
+    }).join('')}</div>`;
+}
+
+function qualityRecognitionToggle(index, checked) {
+    const row = qualityRecognitionRows[index]; if (!row || !row.matched_sid || row.status === 'duplicate') return;
+    row.selected = !!checked; qualityRecognitionSyncTargets(); qualityRecognitionRender();
+}
+
+function qualityRecognitionSelectReliable() {
+    qualityRecognitionRows.forEach(row => { row.selected = row.status === 'matched' && !!row.matched_sid; });
+    qualityRecognitionSyncTargets(); qualityRecognitionRender();
+}
+
+function qualityRecognitionClear() {
+    qualityRecognitionRows.forEach(row => { row.selected = false; });
+    qualityRecognitionSyncTargets(); qualityRecognitionRender();
+}
+
+function qualityRecognitionSyncTargets() {
+    qualityRecognitionManagedTargets.forEach(sid => qualityBatchTargets.delete(sid));
+    const next = new Set();
+    qualityRecognitionRows.forEach(row => { if (row.selected && row.matched_sid && row.status !== 'duplicate') next.add(row.matched_sid); });
+    next.forEach(sid => qualityBatchTargets.add(sid));
+    qualityRecognitionManagedTargets = next;
+    qualityBatchRenderStudentList();
+    qualityBatchRefreshPreview(true);
+}
+
+function qualityRecognitionEditMatch(index) {
+    const row = qualityRecognitionRows[index]; if (!row) return;
+    qualityRecognitionMatchIndex = index;
+    const candidates = (row.candidates || []).slice(0, 5);
+    const candidateHtml = candidates.length ? candidates.map((candidate, rank) => {
+        const token = qualityRecognitionSidToken(candidate.sid);
+        const selected = row.matched_sid === candidate.sid ? ' selected' : '';
+        return `<button type="button" class="quality-match-candidate${selected}" data-quality-match-sid="${escapeHtml(candidate.sid)}" onclick="qualityRecognitionChooseMatch(${index},'${token}')"><span class="quality-candidate-rank">${rank + 1}</span><span><b>${escapeHtml(candidate.name)}</b><small>${escapeHtml(candidate.class)} · ${escapeHtml(candidate.sid)}</small></span><em>${qualityRecognitionSimilarity(candidate)}%</em></button>`;
+    }).join('') : '<div class="quality-match-empty">暂无可靠候选，请在下方搜索全部花名册。</div>';
+    const current = row.matched_sid && qualityRoster[row.matched_sid] ? qualityRoster[row.matched_sid] : null;
+    showModal('确认名单中的学生', `<div class="quality-recognition-match-dialog"><div class="quality-match-source"><small>文件原文</small><strong>${escapeHtml(row.raw_name||'未提供姓名')}</strong><span>${escapeHtml(row.raw_class||'未提供班级')} · ${escapeHtml(row.raw_student_id||'未提供学号')}</span><p>${escapeHtml(row.reason||'')}</p></div><section class="quality-match-section"><div class="quality-match-section-head"><b>最相似候选</b><small>综合姓名、学号和班级排序</small></div><div class="quality-match-candidate-list">${candidateHtml}</div></section><section class="quality-match-section quality-match-search-section"><label for="quality-recognition-match-search">搜索全部花名册</label><div class="quality-match-search"><span>⌕</span><input id="quality-recognition-match-search" class="input" autocomplete="off" placeholder="输入姓名、班级或学号" oninput="qualityRecognitionSearchRoster(${index})"></div><div id="quality-recognition-match-results" class="quality-match-results" role="listbox"></div></section><div id="quality-recognition-match-selected" class="quality-match-selected ${current?'':'empty'}">${current?`<small>将匹配为</small><strong>${escapeHtml(current.name)}</strong><span>${escapeHtml(current.class)} · ${escapeHtml(row.matched_sid)}</span>`:'<span>尚未选择学生</span>'}</div><input type="hidden" id="quality-recognition-match-select" value="${escapeHtml(row.matched_sid||'')}">${row.matched_sid?'<button type="button" class="quality-match-clear" onclick="qualityRecognitionClearMatchChoice()">取消当前匹配</button>':''}</div>`, `<button class="btn btn-ghost btn-sm" onclick="closeModal()">返回</button><button class="btn btn-primary btn-sm" id="quality-recognition-match-confirm" onclick="qualityRecognitionConfirmMatch(${index})">确认匹配</button>`);
+    setTimeout(() => qualityRecognitionSearchRoster(index), 0);
+}
+
+function qualityRecognitionSearchRoster(index) {
+    const row = qualityRecognitionRows[index];
+    const resultBox = document.getElementById('quality-recognition-match-results');
+    const query = (document.getElementById('quality-recognition-match-search')?.value || '').trim().toLowerCase().replace(/\s+/g, '');
+    if (!row || !resultBox) return;
+    const candidateOrder = new Map((row.candidates || []).map((candidate, rank) => [String(candidate.sid), rank]));
+    const selectedSid = document.getElementById('quality-recognition-match-select')?.value || '';
+    const matches = Object.entries(qualityRoster).map(([sid, info]) => ({sid, name:info.name||'', class:info.class||'其他'})).filter(student => {
+        if (!query) return true;
+        return `${student.name}${student.class}${student.sid}`.toLowerCase().replace(/\s+/g, '').includes(query);
+    }).sort((a, b) => {
+        const ar = candidateOrder.has(a.sid) ? candidateOrder.get(a.sid) : 9999;
+        const br = candidateOrder.has(b.sid) ? candidateOrder.get(b.sid) : 9999;
+        return ar - br || a.class.localeCompare(b.class, 'zh-CN') || a.name.localeCompare(b.name, 'zh-CN');
+    }).slice(0, 80);
+    resultBox.innerHTML = matches.length ? matches.map(student => {
+        const token = qualityRecognitionSidToken(student.sid);
+        const suggested = candidateOrder.has(student.sid) ? '<em>候选</em>' : '';
+        return `<button type="button" role="option" aria-selected="${selectedSid===student.sid}" class="quality-match-result ${selectedSid===student.sid?'selected':''}" data-quality-match-sid="${escapeHtml(student.sid)}" onclick="qualityRecognitionChooseMatch(${index},'${token}')"><span><b>${escapeHtml(student.name)}</b><small>${escapeHtml(student.class)} · ${escapeHtml(student.sid)}</small></span>${suggested}</button>`;
+    }).join('') : '<div class="quality-match-empty">没有找到包含该关键词的学生。</div>';
+}
+
+function qualityRecognitionChooseMatch(index, encodedSid) {
+    const sid = decodeURIComponent(encodedSid || '');
+    const info = qualityRoster[sid];
+    const input = document.getElementById('quality-recognition-match-select');
+    const selected = document.getElementById('quality-recognition-match-selected');
+    if (!info || !input || !selected) return;
+    input.value = sid;
+    selected.className = 'quality-match-selected';
+    selected.innerHTML = `<small>将匹配为</small><strong>${escapeHtml(info.name)}</strong><span>${escapeHtml(info.class)} · ${escapeHtml(sid)}</span>`;
+    document.querySelectorAll('[data-quality-match-sid]').forEach(element => {
+        const active = element.dataset.qualityMatchSid === sid;
+        element.classList.toggle('selected', active);
+        if (element.getAttribute('role') === 'option') element.setAttribute('aria-selected', String(active));
+    });
+}
+
+function qualityRecognitionClearMatchChoice() {
+    const input = document.getElementById('quality-recognition-match-select');
+    const selected = document.getElementById('quality-recognition-match-selected');
+    if (input) input.value = '';
+    if (selected) { selected.className = 'quality-match-selected empty'; selected.innerHTML = '<span>将取消当前匹配</span>'; }
+    document.querySelectorAll('[data-quality-match-sid]').forEach(element => element.classList.remove('selected'));
+}
+
+function qualityRecognitionApplyMatch(index, sid) {
+    const row = qualityRecognitionRows[index];
+    if (!row) return false;
+    if (!sid) {
+        row.matched_sid='';row.matched_name='';row.matched_class='';row.status='unmatched';row.confidence='none';row.selected=false;row.reason='已由操作人取消匹配';
+        return true;
+    }
+    const info=qualityRoster[sid];
+    if(!info)return false;
+    const duplicateIndex = qualityRecognitionRows.findIndex((other, otherIndex) =>
+        otherIndex !== index && other.matched_sid === sid && other.selected
+    );
+    row.matched_sid=sid;
+    row.matched_name=info.name;
+    row.matched_class=info.class;
+    if (duplicateIndex >= 0) {
+        row.status='duplicate';
+        row.confidence='none';
+        row.selected=false;
+        row.reason=`与第 ${duplicateIndex + 1} 条识别结果重复，未自动勾选`;
+    } else {
+        row.status='matched';
+        row.confidence='manual';
+        row.selected=true;
+        row.reason='操作人已手动确认';
+    }
+    return true;
+}
+
+function qualityRecognitionUseCandidate(index, encodedSid) {
+    const sid = decodeURIComponent(encodedSid || '');
+    if (!qualityRecognitionApplyMatch(index, sid)) return;
+    qualityRecognitionSyncTargets();
+    qualityRecognitionRender();
+    showToast('已采用候选并勾选该学生', 'success');
+}
+
+function qualityRecognitionConfirmMatch(index) {
+    const row = qualityRecognitionRows[index]; const sid = document.getElementById('quality-recognition-match-select')?.value || '';
+    if (!row) return;
+    if (!qualityRecognitionApplyMatch(index, sid)) return;
+    closeModal(); qualityRecognitionSyncTargets(); qualityRecognitionRender();
+}
+
+// Batch Bonus (批量加分)
+// ============================================================
+
+async function qualityBatchInitUI() {
+    const classSel = document.getElementById('qb-class-filter');
+    if (classSel) {
+        classSel.innerHTML = '<option value="">全部班级</option>';
+        qualityClassOrder.forEach(cls => {
+            const option = document.createElement('option');
+            option.value = cls;
+            option.textContent = cls;
+            option.selected = cls === qualityBatchClassFilter;
+            classSel.appendChild(option);
+        });
+    }
+    try {
+        const [categories, mappings, presets] = await Promise.all([
+            eel.get_quality_categories()(),
+            eel.load_activity_mappings_json()(),
+            eel.get_official_quality_presets()(),
+        ]);
+        const categorySel = document.getElementById('qb-cat');
+        const projectList = document.getElementById('qb-project-datalist');
+        const ruleList = document.getElementById('qb-rule-datalist');
+        const categoryNames = new Set(categories || []);
+        Object.values(mappings || {}).forEach(mapping => {
+            if (mapping && mapping.category) categoryNames.add(mapping.category);
+        });
+        qualityThresholds.forEach(threshold => {
+            (threshold.categories || []).forEach(category => categoryNames.add(category));
+        });
+        if (categorySel) {
+            const current = categorySel.value;
+            categorySel.innerHTML = '<option value="">-- 类别 --</option>';
+            categoryNames.forEach(category => {
+                const option = document.createElement('option');
+                option.value = category;
+                option.textContent = category;
+                categorySel.appendChild(option);
+            });
+            if ([...categorySel.options].some(option => option.value === current)) categorySel.value = current;
+        }
+        if (projectList) {
+            projectList.innerHTML = '';
+            Object.entries(mappings || {}).filter(([,mapping]) => mapping?.source === 'user').forEach(([name]) => {
+                const option = document.createElement('option');
+                option.value = name;
+                projectList.appendChild(option);
+            });
+        }
+        qualityBatchRules = (presets || []).map(preset => ({...preset, kind:'official'}));
+        Object.entries(mappings || {}).filter(([,mapping]) => mapping?.source === 'user').forEach(([name,mapping]) => {
+            qualityBatchRules.push({id:`user:${name}`,name:`我的常用设置·${name}`,projectName:name,category:mapping.category,grade:mapping.default_grade||'',score:Number(mapping.default_score)||0,primary_category:'个人模板',cap_group:null,kind:'user'});
+        });
+        qualityBatchRuleByLabel = {};
+        if (ruleList) ruleList.innerHTML = '';
+        qualityBatchRules.forEach(rule => {
+            const score=Number(rule.score)||0;
+            const label=`${rule.primary_category||rule.category}｜${rule.name}｜+${score.toFixed(score%1?1:0)}`;
+            rule.label=label;qualityBatchRuleByLabel[label]=rule;
+            if(ruleList){const option=document.createElement('option');option.value=label;ruleList.appendChild(option);}
+        });
+    } catch (error) {
+        console.error('批量加分选项加载失败', error);
+    }
+    qualityBatchRenderCapHint();
+}
+
+function qualityBatchRenderCapHint() {
+    const target = document.getElementById('qb-cap-hint');
+    const category = document.getElementById('qb-cat')?.value || '';
+    if (!target) return;
+    if (!category) {
+        target.className = 'quality-batch-cap-hint empty';
+        target.innerHTML = '<span>选择加分规则后显示所在上限组</span><small>无上限的类别也会明确标出。</small>';
+        return;
+    }
+    const rules = qualityThresholds.filter(th => {
+        const thCats = th.categories || [];
+        return thCats.includes(category);
+    });
+    if (!rules.length) {
+        target.className = 'quality-batch-cap-hint no-cap';
+        target.innerHTML = `<div><small>所在上限组</small><strong>无统一上限</strong></div><p>“${escapeHtml(category)}”按材料认定值计入；同一项目重复获奖仍只保留最高项。</p>`;
+        return;
+    }
+    target.className = 'quality-batch-cap-hint active';
+    target.innerHTML = rules.map(th => {
+        const isMaxItem = th.mode === 'max_item';
+        return `<div class="quality-cap-group-card"><span>${isMaxItem?'取最高':'累计封顶'}</span><strong>${escapeHtml(th.name)}</strong><em>${Number(th.max).toFixed(1)}<small>分上限</small></em><p>${isMaxItem?'同组出现多项时只计最高单项':'同组分数累计达到上限后，继续保留明细但不再增加有效分'}</p></div>`;
+    }).join('<br>');
+}
+
+function qualityBatchRenderStudentList() {
+    const container = document.getElementById('qb-student-list');
+    if (!container) return;
+    if (Object.keys(qualityRoster).length === 0) {
+        container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:12px;">请先导入花名册</p>';
+        return;
+    }
+    const term = (qualityBatchSearchTerm || '').toLowerCase();
+    const classFilter = qualityBatchClassFilter || '';
+    const grouped = {};
+    for (const [sid, info] of Object.entries(qualityRoster)) {
+        if (classFilter && info.class !== classFilter) continue;
+        if (term && !info.name.toLowerCase().includes(term) && !sid.toLowerCase().includes(term)) continue;
+        if (!grouped[info.class]) grouped[info.class] = [];
+        grouped[info.class].push({ sid, name: info.name });
+    }
+    const sortedClasses = Object.keys(grouped).sort();
+    let html = '';
+    let totalVisible = 0;
+    if (sortedClasses.length === 0) {
+        html = '<p style="color:var(--text-muted);text-align:center;padding:12px;">无匹配学生</p>';
+    } else {
+        sortedClasses.forEach(cls => {
+            const students = grouped[cls];
+            totalVisible += students.length;
+            const allSelected = students.every(s => qualityBatchTargets.has(s.sid));
+            const someSelected = students.some(s => qualityBatchTargets.has(s.sid));
+            const selectedCount = students.filter(s => qualityBatchTargets.has(s.sid)).length;
+            html += '<div style="margin-bottom:2px;">';
+            html += '<button type="button" style="display:flex;width:100%;align-items:center;padding:4px 8px;background:var(--bg-secondary);border:0;border-radius:4px;cursor:pointer;font:inherit;font-weight:600;font-size:12px;color:inherit;text-align:left;" onclick="qualityBatchToggleClass(\'' + escapeHtml(cls).replace(/'/g,"\\'") + '\')">';
+            html += '<span style="margin-right:6px;">' + (allSelected ? '☑' : someSelected ? '◐' : '☐') + '</span>';
+            html += '<span>' + escapeHtml(cls) + '</span>';
+            html += '<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">' + selectedCount + '/' + students.length + '</span>';
+            html += '</button>';
+            students.forEach(s => {
+                html += '<button type="button" style="display:flex;width:100%;align-items:center;padding:3px 8px 3px 28px;border:0;background:transparent;cursor:pointer;font:inherit;font-size:11px;color:inherit;text-align:left;' + (qualityBatchTargets.has(s.sid) ? 'background:var(--accent-primary-muted);border-radius:4px;' : '') + '" onclick="qualityBatchToggleStudent(\'' + s.sid.replace(/'/g,"\\'") + '\')">';
+                html += '<span style="margin-right:6px;">' + (qualityBatchTargets.has(s.sid) ? '☑' : '☐') + '</span>';
+                html += '<span>' + escapeHtml(s.name) + '</span>';
+                html += '<span style="margin-left:auto;font-size:9px;color:var(--text-muted);">' + escapeHtml(s.sid) + '</span>';
+                html += '</button>';
+            });
+            html += '</div>';
+        });
+    }
+    container.innerHTML = html;
+    document.getElementById('qb-selection-count').textContent = '已选择 ' + qualityBatchTargets.size + ' 名学生 (可见 ' + totalVisible + ')';
+}
+
+function qualityBatchToggleStudent(sid) {
+    if (qualityBatchTargets.has(sid)) { qualityBatchTargets.delete(sid); if(qualityRecognitionManagedTargets.has(sid)){qualityRecognitionManagedTargets.delete(sid);qualityRecognitionRows.filter(row=>row.matched_sid===sid).forEach(row=>{row.selected=false;});qualityRecognitionRender();} }
+    else { qualityBatchTargets.add(sid); }
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchToggleClass(cls) {
+    const term = (qualityBatchSearchTerm || '').toLowerCase();
+    const students = [];
+    for (const [sid, info] of Object.entries(qualityRoster)) {
+        if (info.class !== cls) continue;
+        if (term && !info.name.toLowerCase().includes(term) && !sid.toLowerCase().includes(term)) continue;
+        students.push(sid);
+    }
+    if (students.length === 0) return;
+    const allSelected = students.every(s => qualityBatchTargets.has(s));
+    if (allSelected) { students.forEach(s => {qualityBatchTargets.delete(s);if(qualityRecognitionManagedTargets.has(s)){qualityRecognitionManagedTargets.delete(s);qualityRecognitionRows.filter(row=>row.matched_sid===s).forEach(row=>{row.selected=false;});}});qualityRecognitionRender(); }
+    else { students.forEach(s => qualityBatchTargets.add(s)); }
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchSearch() {
+    qualityBatchSearchTerm = document.getElementById('qb-search') ? document.getElementById('qb-search').value : '';
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchFilterClass() {
+    qualityBatchClassFilter = document.getElementById('qb-class-filter') ? document.getElementById('qb-class-filter').value : '';
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchSelectAllVisible() {
+    const term = (qualityBatchSearchTerm || '').toLowerCase();
+    const classFilter = qualityBatchClassFilter || '';
+    for (const [sid, info] of Object.entries(qualityRoster)) {
+        if (classFilter && info.class !== classFilter) continue;
+        if (term && !info.name.toLowerCase().includes(term) && !sid.toLowerCase().includes(term)) continue;
+        qualityBatchTargets.add(sid);
+    }
+    qualityBatchRenderStudentList();
+}
+
+function qualityBatchClearSelection() {
+    qualityBatchTargets = new Set(); qualityRecognitionManagedTargets = new Set(); qualityRecognitionRows.forEach(row=>{row.selected=false;}); qualityRecognitionRender();
+    qualityBatchRenderStudentList();
+}
+
+async function qualityBatchOnRuleInput() {
+    const label = document.getElementById('qb-rule')?.value.trim() || '';
+    const rule = qualityBatchRuleByLabel[label] || null;
+    qualityBatchSelectedRule = rule;
+    if (!rule) { qualityBatchRenderCapHint(); return; }
+    const activity = document.getElementById('qb-activity');
+    if (rule.kind === 'user' && rule.projectName && activity && !activity.value.trim()) activity.value = rule.projectName;
+    const category = document.getElementById('qb-cat'); if (category) category.value = rule.category || '';
+    await qualityBatchOnCat();
+    const grade = document.getElementById('qb-grade');
+    if (grade && rule.grade) {
+        if (![...grade.options].some(option => option.value === rule.grade)) { const option=document.createElement('option');option.value=rule.grade;option.textContent=rule.grade;grade.appendChild(option); }
+        grade.value = rule.grade;
+    }
+    const score = document.getElementById('qb-score'); if (score) score.value = rule.score;
+    qualityBatchRenderCapHint();
+    qualityBatchRefreshPreview(true);
+}
+
+async function qualityBatchOnCat() {
+    const cat = document.getElementById('qb-cat').value;
+    if (qualityBatchSelectedRule && cat !== qualityBatchSelectedRule.category) {
+        qualityBatchSelectedRule = null;
+        const ruleInput = document.getElementById('qb-rule'); if (ruleInput) ruleInput.value = '';
+    }
+    const sel = document.getElementById('qb-grade');
+    sel.innerHTML = '<option value="">-- 等级 --</option>';
+    if (cat) {
+        try {
+            const grades = await eel.get_quality_grades(cat)();
+            grades.forEach(function(g) { const o = document.createElement('option'); o.value = g; o.textContent = g; sel.appendChild(o); });
+        } catch(e) {}
+    }
+    qualityBatchRenderCapHint();
+}
+
+function qualityBatchScoreModeChanged() {
+    qualityBatchRefreshPreview(true);
+}
+
+function qualityBatchGatherInput(silent = false) {
+    const activityEl = document.getElementById('qb-activity');
+    const catEl = document.getElementById('qb-cat');
+    const gradeEl = document.getElementById('qb-grade');
+    const scoreEl = document.getElementById('qb-score');
+    const activity = activityEl ? activityEl.value.trim() : '';
+    const category = catEl ? catEl.value : '';
+    const grade = gradeEl ? gradeEl.value : '';
+    const score = scoreEl ? (parseFloat(scoreEl.value) || 0) : 0;
+    const scoreMode = document.getElementById('qb-score-mode')?.value || 'uniform';
+    if (!activity) { if(!silent)showToast('请输入加分项目名称', 'warning'); return null; }
+    if (!category) { if(!silent)showToast('请选择类别', 'warning'); return null; }
+    if (score <= 0) { if(!silent)showToast('请输入有效分数', 'warning'); return null; }
+    return { activity: activity, category: category, grade: grade, score: score, scoreMode: scoreMode,
+        officialPresetId: qualityBatchSelectedRule?.kind==='official' ? qualityBatchSelectedRule.id : null,
+        ruleLabel: qualityBatchSelectedRule?.name || '', capGroup: qualityBatchSelectedRule?.cap_group || null };
+}
+
+function qualityBatchFileScoreForSid(sid) {
+    const rows = qualityRecognitionRows.filter(row => row.selected && row.matched_sid === sid && row.file_score != null && Number(row.file_score) > 0);
+    return rows.length ? Number(rows[0].file_score) : null;
+}
+
+function qualityBatchScoreForSid(sid, input) {
+    if (input.scoreMode === 'file') return qualityBatchFileScoreForSid(sid) ?? input.score;
+    if (input.scoreMode === 'individual') return Number(qualityBatchIndividualScores[sid] ?? qualityBatchFileScoreForSid(sid) ?? input.score) || input.score;
+    return input.score;
+}
+
+function qualityBatchSetIndividualScore(sid, value) {
+    const score = Number(value); if (score > 0) qualityBatchIndividualScores[sid] = score;
+}
+
+function qualityBatchCapUsage(existing, category, addedScore) {
+    const threshold = qualityThresholds.find(th => (th.categories || []).includes(category));
+    if (!threshold) return { threshold:null, before:null, after:null, effectiveAdded:addedScore, capped:false, note:'无统一上限' };
+    const scores = existing.filter(item => (threshold.categories||[]).includes(item.category)).map(item => Number(item.score)||0);
+    const max = Number(threshold.max)||0;
+    const raw = scores.reduce((sum,score)=>sum+score,0);
+    const before = threshold.mode==='max_item' ? Math.min(scores.length?Math.max(...scores):0,max) : Math.min(raw,max);
+    const after = threshold.mode==='max_item' ? Math.min(Math.max(scores.length?Math.max(...scores):0,addedScore),max) : Math.min(raw+addedScore,max);
+    const effectiveAdded = Math.max(0,after-before);
+    return { threshold,before,after,effectiveAdded,capped:effectiveAdded<addedScore,note:`${threshold.name}：${before.toFixed(1)} / ${max.toFixed(1)} → ${after.toFixed(1)} / ${max.toFixed(1)}（本次有效 +${effectiveAdded.toFixed(2)}）` };
+}
+
+function qualityBatchRefreshPreview(silent = false) {
+    const input = qualityBatchGatherInput(silent);
+    const container = document.getElementById('qb-preview');
+    const btn = document.getElementById('qb-execute-btn');
+    if (!container) return;
+
+    if (!input || qualityBatchTargets.size === 0) {
+        container.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:12px;">设置加分项目并选择学生后点击刷新预览</p>';
+        if (btn) { btn.disabled = true; btn.textContent = '📋 批量添加 (+0 人)'; }
+        return;
+    }
+
+    let willAdd = 0, dupCount = 0, possibleCount = 0, cappedCount = 0, fileFallbackCount = 0;
+    const previewRows = [];
+
+    qualityBatchTargets.forEach(function(sid) {
+        const info = qualityRoster[sid];
+        if (!info) return;
+        const existing = qualityData[sid] || [];
+        const personScore = qualityBatchScoreForSid(sid, input);
+        if (input.scoreMode === 'file' && qualityBatchFileScoreForSid(sid) == null) fileFallbackCount++;
+
+        const duplicate = qualityFindDuplicate(existing, { ...input, score:personScore });
+
+        const exactDup = duplicate.level === 'exact';
+        if (exactDup) dupCount++;
+        const possibleDup = duplicate.level === 'possible';
+        if (possibleDup) possibleCount++;
+
+        const capUsage = qualityBatchCapUsage(existing, input.category, personScore);
+        const simulated = existing.concat([{ activity: input.activity, category: input.category, grade: input.grade, score: personScore }]);
+        const catTotals = {};
+        simulated.forEach(function(a) { catTotals[a.category] = (catTotals[a.category] || 0) + a.score; });
+        const thResult = _qualityApplyThresholds(catTotals, simulated);
+        const totalDeduction = thResult.totalDeduction;
+        const capNotes = thResult.capNotes;
+        const rawTotal = Object.values(catTotals).reduce(function(a, b) { return a + b; }, 0);
+        const newTotal = Math.max(0, rawTotal - totalDeduction);
+        const isCapped = capUsage.capped;
+
+        if (isCapped) cappedCount++;
+        willAdd++;
+        previewRows.push({ sid: sid, name: info.name, cls: info.class, score:personScore, existingItems: existing.length, willAdd: true, dup: exactDup, possibleDup, duplicateItem:duplicate.matches[0] || null, capped: isCapped, capNote: capUsage.note || capNotes.join('; '), newTotal: newTotal, effectiveAdded:capUsage.effectiveAdded, capUsage:capUsage });
+    });
+
+    let html = '';
+    if (previewRows.length === 0) {
+        html = '<p style="color:var(--text-muted);text-align:center;padding:12px;">无数据</p>';
+    } else {
+        html += '<div style="margin-bottom:6px;font-size:10px;display:flex;gap:12px;flex-wrap:wrap;">';
+        html += '<span style="color:var(--color-success);">✅ 将添加: <strong>' + willAdd + '</strong> 人</span>';
+        if (dupCount > 0) html += '<span style="color:var(--color-error);">❗ 确定重复，执行前选择: <strong>' + dupCount + '</strong> 人</span>';
+        if (possibleCount > 0) html += '<span style="color:var(--color-warning);">⚠️ 疑似重复，执行前选择: <strong>' + possibleCount + '</strong> 人</span>';
+        if (cappedCount > 0) html += '<span style="color:var(--color-warning);">⚠️ 触及上限: <strong>' + cappedCount + '</strong> 人</span>';
+        if (fileFallbackCount > 0) html += '<span style="color:var(--color-warning);">文件无分值，回退统一分数: <strong>' + fileFallbackCount + '</strong> 人</span>';
+        html += '</div>';
+        html += '<table class="data-table quality-batch-preview-table" style="font-size:10px;"><thead><tr><th>姓名</th><th>班级</th><th>本次原始分</th><th>所在上限组</th><th>有效计入</th><th>新总分</th><th>状态</th></tr></thead><tbody>';
+        previewRows.forEach(function(r) {
+            const opIcon = r.dup ? '❗' : r.possibleDup ? '⚠️' : r.capped ? '⚠️' : '✅';
+            const opText = r.dup ? '确定重复，待选择' : r.possibleDup ? '疑似重复，待选择' : r.capped ? '加(触上限)' : '添加';
+            const opColor = r.dup ? 'var(--color-error)' : r.possibleDup || r.capped ? 'var(--color-warning)' : 'var(--color-success)';
+            const totalDisplay = r.newTotal !== null ? r.newTotal.toFixed(1) : '—';
+            const scoreCell = input.scoreMode==='individual' ? `<input class="quality-individual-score" type="number" min="0.01" step="0.1" value="${Number(r.score).toFixed(2)}" onchange="qualityBatchSetIndividualScore('${r.sid.replace(/'/g,"\\'")}',this.value);qualityBatchRefreshPreview(true)">` : Number(r.score).toFixed(2);
+            const capGroup = r.capUsage?.threshold ? `<b>${escapeHtml(r.capUsage.threshold.name)}</b><small>${r.capUsage.threshold.mode==='max_item'?'只取最高':'上限 '+Number(r.capUsage.threshold.max).toFixed(1)}</small>` : '<span class="quality-no-cap">无统一上限</span>';
+            const duplicateRemark = r.duplicateItem ? `已有：${qualityDuplicateItemText(r.duplicateItem)}` : '';
+            const remark = r.dup || r.possibleDup ? duplicateRemark : (r.capNote || '');
+            html += '<tr class="' + (r.dup ? 'quality-preview-duplicate-exact' : r.possibleDup ? 'quality-preview-duplicate-possible' : '') + '">';
+            html += '<td>' + escapeHtml(r.name) + '</td>';
+            html += '<td>' + escapeHtml(r.cls) + '</td>';
+            html += '<td>' + scoreCell + '</td>';
+            html += '<td class="quality-preview-cap">' + capGroup + '</td>';
+            html += '<td style="font-weight:700;color:var(--accent-primary);">+' + Number(r.effectiveAdded||0).toFixed(2) + '</td>';
+            html += '<td style="font-weight:600;">' + totalDisplay + '</td>';
+            html += '<td style="color:' + opColor + ';"><b>' + opIcon + ' ' + opText + '</b><small title="' + escapeHtml(remark) + '">' + escapeHtml(remark) + '</small></td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+    }
+
+    container.innerHTML = html;
+    if (btn) {
+        btn.disabled = willAdd === 0;
+        btn.textContent = '📋 批量添加 (+' + willAdd + ' 人)' + (possibleCount + dupCount > 0 ? ', 需选择 ' + (possibleCount + dupCount) : '');
+    }
+}
+
+async function qualityBatchExecute() {
+    const input = qualityBatchGatherInput();
+    if (!input) return;
+    if (qualityBatchTargets.size === 0) { showToast('请先选择目标学生', 'warning'); return; }
+
+    const duplicateRows = [];
+    qualityBatchTargets.forEach(function(sid) {
+        const info = qualityRoster[sid]; if (!info) return;
+        const personScore = qualityBatchScoreForSid(sid, input);
+        const duplicate = qualityFindDuplicate(qualityData[sid] || [], { ...input, score:personScore });
+        if (duplicate.level !== 'none') duplicateRows.push({ sid, info, item:duplicate.matches[0], incoming:{ activity:input.activity, category:input.category, grade:input.grade, score:personScore } });
+    });
+    let duplicateDecision = 'keep_all';
+    if (duplicateRows.length) {
+        duplicateDecision = await qualityAskDuplicateResolution({ rows:duplicateRows });
+    }
+
+    let added = 0, removedExisting = 0, keptExisting = 0;
+    qualityBatchTargets.forEach(function(sid) {
+        const existing = qualityData[sid] || [];
+        const personScore = qualityBatchScoreForSid(sid, input);
+        const duplicate = qualityFindDuplicate(existing, { ...input, score:personScore });
+        if (duplicate.level !== 'none' && duplicateDecision === 'keep_existing') { keptExisting++; return; }
+        if (duplicate.level !== 'none' && duplicateDecision === 'replace') {
+            const index=existing.indexOf(duplicate.matches[0]); if(index>=0){existing.splice(index,1);removedExisting++;}
+        }
+
+        if (!qualityData[sid]) qualityData[sid] = [];
+        qualityData[sid].push({ activity: input.activity, category: input.category, grade: input.grade, score: personScore,
+            official_preset_id:input.officialPresetId, rule_label:input.ruleLabel, cap_group:input.capGroup,
+            score_source:input.scoreMode });
+        added++;
+    });
+
+    eel.save_activity_mapping(input.activity, input.category, input.grade, input.score)();
+
+    let msg = '批量加分完成: 添加 ' + added + ' 人';
+    if (removedExisting > 0) msg += ', 替换旧记录 ' + removedExisting + ' 条';
+    if (keptExisting > 0) msg += ', 保留旧记录 ' + keptExisting + ' 人';
+    showToast(msg, added > 0 ? 'success' : 'info');
+
+    qualityBatchTargets = new Set(); qualityRecognitionManagedTargets = new Set();
+    qualityRecognitionRows.forEach(row => { row.selected = false; });
+    qualityBatchRenderStudentList();
+    qualityBatchRefreshPreview();
+    qualityRecognitionRender();
+    document.getElementById('qb-activity').value = '';
+    document.getElementById('qb-rule').value = '';
+    document.getElementById('qb-score').value = '';
+    document.getElementById('qb-grade').innerHTML = '<option value="">-- 等级 --</option>';
+    qualityBatchSelectedRule = null; qualityBatchIndividualScores = {}; qualityBatchRenderCapHint();
+}
+
+function qualityBatchDeselectDups() {
+    const input = qualityBatchGatherInput();
+    if (!input) return;
+    let removed = 0;
+    qualityBatchTargets.forEach(function(sid) {
+        const existing = qualityData[sid] || [];
+        const personScore = qualityBatchScoreForSid(sid, input);
+        const duplicate = qualityFindDuplicate(existing, { ...input, score:personScore });
+        if (duplicate.level === 'exact') { qualityBatchTargets.delete(sid); qualityRecognitionManagedTargets.delete(sid); qualityRecognitionRows.filter(row=>row.matched_sid===sid).forEach(row=>{row.selected=false;}); removed++; }
+    });
+    qualityBatchRenderStudentList();
+    qualityBatchRefreshPreview();
+    qualityRecognitionRender();
+    if (removed > 0) showToast('已取消选择 ' + removed + ' 名确定重复的学生；疑似重复仍保留供确认', 'info');
+    else showToast('没有确定重复项；疑似重复会在执行前再次提醒', 'info');
 }

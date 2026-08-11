@@ -18,6 +18,7 @@ import tempfile
 import shutil
 import subprocess
 import threading
+import uuid
 import tkinter as tk
 from tkinter import filedialog
 from collections import defaultdict
@@ -47,6 +48,13 @@ def _open_path_in_os(path: str):
 
 from backend.module_a_gpa import process_gpa
 from backend.module_b_moral import process_moral_education, preview_file_sheets
+from backend.moral_vnext import list_moral_students as list_moral_students_impl, process_moral_fresh, process_moral_vnext
+from backend.moral_templates import (
+    analyze_moral_project_templates as analyze_moral_project_templates_impl,
+    copy_moral_project_templates as copy_moral_project_templates_impl,
+    list_moral_project_templates as list_moral_project_templates_impl,
+)
+from backend.moral_cloud import prepare_moral_cloud_bundle as prepare_moral_cloud_bundle_impl
 from backend.module_c_quality import (
     load_activity_mappings, record_activity, get_activity_suggestion,
     get_categories, get_grades_for_category, get_thresholds,
@@ -58,73 +66,315 @@ from backend.module_c_quality import (
 )
 from backend.module_d_comprehensive import process_comprehensive
 from backend.utils.progress_reporter import ProgressReporter
+from backend.import_studio import (
+    analyze_import_file as analyze_import_file_impl,
+    list_import_templates as list_import_templates_impl,
+    save_import_template as save_import_template_impl,
+)
+from backend.quality_presets import (
+    build_official_presets, calculate_activity_score, validate_manual_score,
+)
+from backend.quality_file_recognizer import (
+    recognize_quality_bonus_file as recognize_quality_bonus_file_impl,
+)
+from backend.app_update import (
+    download_app_update as download_app_update_impl,
+    get_app_update_status as get_app_update_status_impl,
+    inspect_windows_executable as inspect_windows_executable_impl,
+    launch_windows_replacement as launch_windows_replacement_impl,
+)
+from backend.kdocs_sync import (
+    auth_status as kdocs_auth_status_impl,
+    bind_workbook as kdocs_bind_workbook_impl,
+    get_binding as kdocs_get_binding_impl,
+    get_cli_version_status as kdocs_cli_version_status_impl,
+    get_sync_overview as kdocs_get_sync_overview_impl,
+    login as kdocs_login_impl,
+    logout as kdocs_logout_impl,
+    reorder_bound_workbook as kdocs_reorder_workbook_impl,
+    sync_workbook as kdocs_sync_workbook_impl,
+    upgrade_cli as kdocs_upgrade_cli_impl,
+)
 
 
 # ============================================================
-# File dialog helpers
+# File dialog helpers for legacy Eel/dev mode.
+# The desktop build overrides these through backend.api and uses pywebview's
+# window-owned dialogs so they cannot appear behind the application.
 # ============================================================
+
+def _diag(msg):
+    try:
+        with open(os.path.join(tempfile.gettempdir(), 'app_diag.log'), 'a', encoding='utf-8') as f:
+            import datetime as _dt
+            f.write(f'[{_dt.datetime.now():%H:%M:%S}] {msg}\n')
+    except Exception:
+        pass
+
+@eel.expose
+def ping_diag():
+    """Diagnostic: verify API bridge works."""
+    _diag('ping_diag called — API bridge OK')
+    return 'pong'
+
+
+# ============================================================
+# Kdocs cloud workbook integration
+# ============================================================
+
+_KDOCS_JOBS = {}
+_KDOCS_JOBS_LOCK = threading.Lock()
+
+
+def _update_kdocs_job(job_id: str, **updates) -> None:
+    with _KDOCS_JOBS_LOCK:
+        job = _KDOCS_JOBS.get(job_id)
+        if job is not None:
+            job.update(updates)
+
+@eel.expose
+def kdocs_auth_status() -> dict:
+    """Return connection state without exposing credentials."""
+    return kdocs_auth_status_impl()
+
+
+@eel.expose
+def kdocs_login() -> dict:
+    """Open the browser OAuth flow and persist credentials in the OS keychain."""
+    return kdocs_login_impl()
+
+
+@eel.expose
+def kdocs_logout() -> dict:
+    """Disconnect the local WPS account by removing its saved credential."""
+    return kdocs_logout_impl()
+
+
+@eel.expose
+def kdocs_cli_version_status(force: bool = False) -> dict:
+    """Return the installed/latest cloud connector versions."""
+    return kdocs_cli_version_status_impl(bool(force))
+
+
+@eel.expose
+def kdocs_upgrade_cli() -> dict:
+    """Upgrade the Kdocs connector after the user confirms in the desktop UI."""
+    return kdocs_upgrade_cli_impl()
+
+
+@eel.expose
+def kdocs_get_binding(cloud_key: str) -> dict:
+    """Return the saved cloud workbook link for one logical output."""
+    return kdocs_get_binding_impl(cloud_key)
+
+
+@eel.expose
+def kdocs_get_sync_overview(cloud_key: str, major: str = "") -> dict:
+    """Return current visible cloud sheets and last synchronization state."""
+    return kdocs_get_sync_overview_impl(cloud_key, major)
+
+
+@eel.expose
+def kdocs_bind_workbook(cloud_key: str, link_url: str) -> dict:
+    """Bind another operator to the existing college-wide cloud workbook."""
+    return kdocs_bind_workbook_impl(cloud_key, link_url)
+
+
+@eel.expose
+def kdocs_sync_workbook(local_path: str, cloud_key: str) -> dict:
+    """Publish a generated workbook or update its existing Kdocs counterpart."""
+    return kdocs_sync_workbook_impl(local_path, cloud_key)
+
+
+@eel.expose
+def prepare_moral_cloud_bundle(local_paths: list) -> dict:
+    """Combine mixed A/B moral outputs into visible per-class sheets for cloud sync."""
+    try:
+        return prepare_moral_cloud_bundle_impl(local_paths or [])
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+@eel.expose
+def kdocs_start_sync_workbook(local_path: str, cloud_key: str, force_create: bool = False) -> dict:
+    """Start synchronization in a background thread and return a progress id."""
+    job_id = uuid.uuid4().hex
+    with _KDOCS_JOBS_LOCK:
+        finished = [key for key, value in _KDOCS_JOBS.items() if value.get("done")]
+        for old_id in finished[:-20]:
+            _KDOCS_JOBS.pop(old_id, None)
+        _KDOCS_JOBS[job_id] = {
+            "success": True,
+            "job_id": job_id,
+            "done": False,
+            "status": "running",
+            "percent": 0,
+            "stage": "正在排队",
+            "detail": "准备连接金山文档",
+            "current_sheet": "",
+            "sheet_index": 0,
+            "sheet_total": 0,
+        }
+
+    def report(percent, stage, detail="", **extra):
+        allowed = {key: extra[key] for key in ("current_sheet", "sheet_index", "sheet_total") if key in extra}
+        _update_kdocs_job(
+            job_id,
+            percent=max(0, min(100, int(percent))),
+            stage=str(stage or "正在同步"),
+            detail=str(detail or ""),
+            **allowed,
+        )
+
+    def worker():
+        try:
+            result = kdocs_sync_workbook_impl(
+                local_path,
+                cloud_key,
+                progress_callback=report,
+                force_create=bool(force_create),
+            )
+        except Exception as exc:
+            result = {"success": False, "error": str(exc)}
+        ok = bool(result.get("success"))
+        _update_kdocs_job(
+            job_id,
+            done=True,
+            status="success" if ok else "error",
+            percent=100,
+            stage="同步完成" if ok else "同步失败",
+            detail=(result.get("name") or "云表已更新") if ok else result.get("error", "同步未完成"),
+            result=result,
+        )
+
+    threading.Thread(target=worker, name=f"kdocs-sync-{job_id[:8]}", daemon=True).start()
+    return {"success": True, "job_id": job_id}
+
+
+@eel.expose
+def kdocs_get_sync_progress(job_id: str) -> dict:
+    """Read one background synchronization snapshot."""
+    with _KDOCS_JOBS_LOCK:
+        job = _KDOCS_JOBS.get(str(job_id))
+        if job is None:
+            return {"success": False, "error": "找不到该同步任务，请重新开始。"}
+        return dict(job)
+
+
+@eel.expose
+def kdocs_start_reorder_workbook(cloud_key: str) -> dict:
+    """Start deterministic worksheet ordering in a background job."""
+    job_id = uuid.uuid4().hex
+    with _KDOCS_JOBS_LOCK:
+        _KDOCS_JOBS[job_id] = {
+            "success": True,
+            "job_id": job_id,
+            "done": False,
+            "status": "running",
+            "percent": 0,
+            "stage": "正在排队",
+            "detail": "准备整理学院云表",
+            "current_sheet": "",
+            "sheet_index": 0,
+            "sheet_total": 0,
+        }
+
+    def report(percent, stage, detail="", **extra):
+        allowed = {key: extra[key] for key in ("current_sheet", "sheet_index", "sheet_total") if key in extra}
+        _update_kdocs_job(
+            job_id,
+            percent=max(0, min(100, int(percent))),
+            stage=str(stage or "正在整理"),
+            detail=str(detail or ""),
+            **allowed,
+        )
+
+    def worker():
+        try:
+            result = kdocs_reorder_workbook_impl(cloud_key, progress_callback=report)
+        except Exception as exc:
+            result = {"success": False, "error": str(exc)}
+        ok = bool(result.get("success"))
+        _update_kdocs_job(
+            job_id,
+            done=True,
+            status="success" if ok else "error",
+            percent=100,
+            stage="顺序整理完成" if ok else "顺序整理失败",
+            detail=(f"已检查 {result.get('sheet_count', 0)} 张工作表" if ok else result.get("error", "整理未完成")),
+            result=result,
+        )
+
+    threading.Thread(target=worker, name=f"kdocs-reorder-{job_id[:8]}", daemon=True).start()
+    return {"success": True, "job_id": job_id}
+
+
+@eel.expose
+def open_web_link(url: str) -> dict:
+    """Open a validated HTTP(S) link in the user's default browser."""
+    if not isinstance(url, str) or not re.match(r'^https?://', url, re.I):
+        return {'success': False, 'error': '链接格式无效'}
+    try:
+        _open_path_in_os(url)
+        return {'success': True}
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+def _legacy_dialog(dialog, *, title, file_types=None):
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    try:
+        return dialog(title=title, filetypes=file_types or [('所有文件', '*.*')])
+    finally:
+        root.destroy()
 
 @eel.expose
 def select_file(file_types: list = None, title: str = '选择文件') -> str:
-    """Open native OS file picker dialog.
-
-    Args:
-        file_types: List of (description, pattern) tuples,
-                    e.g. [('Excel Files', '*.xls *.xlsx')]
-        title: Dialog title
-
-    Returns:
-        Selected file path, or empty string if cancelled.
-    """
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-
-    if file_types:
-        ft = [(d, p) for d, p in file_types]
-    else:
-        ft = [('Excel Files', '*.xls *.xlsx'), ('All Files', '*.*')]
-
-    path = filedialog.askopenfilename(title=title, filetypes=ft)
-    root.destroy()
-    return path if path else ''
-
+    _diag(f'select_file called: title={title}')
+    return _legacy_dialog(filedialog.askopenfilename, title=title, file_types=file_types) or ''
 
 @eel.expose
 def select_directory(title: str = '选择输出目录') -> str:
-    """Open native OS directory picker dialog.
-
-    Returns:
-        Selected directory path, or empty string if cancelled.
-    """
+    _diag(f'select_directory called')
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
-
-    path = filedialog.askdirectory(title=title)
-    root.destroy()
-    return path if path else ''
-
+    try:
+        return filedialog.askdirectory(title=title) or ''
+    finally:
+        root.destroy()
 
 @eel.expose
 def select_files(file_types: list = None, title: str = '选择文件') -> list:
-    """Open native OS multi-file picker dialog.
+    _diag(f'select_files called')
+    paths = _legacy_dialog(filedialog.askopenfilenames, title=title, file_types=file_types)
+    return list(paths or [])
 
-    Returns:
-        List of selected file paths.
-    """
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
 
-    if file_types:
-        ft = [(d, p) for d, p in file_types]
-    else:
-        ft = [('Excel Files', '*.xls *.xlsx'), ('All Files', '*.*')]
+@eel.expose
+def list_moral_project_templates() -> list:
+    """Return the fixed one-project template catalogue."""
+    return list_moral_project_templates_impl()
 
-    paths = filedialog.askopenfilenames(title=title, filetypes=ft)
-    root.destroy()
-    return list(paths) if paths else []
+
+@eel.expose
+def analyze_moral_project_templates(paths: list) -> dict:
+    """Validate multiple standard project templates without changing them."""
+    try:
+        return analyze_moral_project_templates_impl(paths or [])
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "files": []}
+
+
+@eel.expose
+def copy_moral_project_templates(project_key: str, output_dir: str) -> dict:
+    """Copy one or all bundled project templates to a selected folder."""
+    try:
+        return copy_moral_project_templates_impl(project_key or "", output_dir or "")
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 # ============================================================
@@ -132,7 +382,8 @@ def select_files(file_types: list = None, title: str = '选择文件') -> list:
 # ============================================================
 
 @eel.expose
-def run_module_a(input_path: str, output_dir: str) -> dict:
+def run_module_a(input_path: str, output_dir: str,
+                 column_mappings: dict = None, major_filter: str = '') -> dict:
     """Run GPA calculation (Module A) — single file.
 
     Args:
@@ -143,14 +394,16 @@ def run_module_a(input_path: str, output_dir: str) -> dict:
         Result dict with output paths and statistics.
     """
     try:
-        result = process_gpa(input_path, output_dir)
+        result = process_gpa(input_path, output_dir, column_mappings=column_mappings,
+                             major_filter=major_filter)
         return result
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
 
 @eel.expose
-def run_module_a_batch(input_paths: list, output_dir: str) -> dict:
+def run_module_a_batch(input_paths: list, output_dir: str,
+                       column_mappings: dict = None, major_filter: str = '') -> dict:
     """Run GPA calculation (Module A) — batch mode.
 
     Args:
@@ -162,7 +415,9 @@ def run_module_a_batch(input_paths: list, output_dir: str) -> dict:
     """
     try:
         from backend.module_a_gpa import process_gpa_batch
-        result = process_gpa_batch(input_paths, output_dir)
+        result = process_gpa_batch(input_paths, output_dir,
+                                   column_mappings=column_mappings or {},
+                                   major_filter=major_filter)
         return result
     except Exception as e:
         return {'success': False, 'error': str(e)}
@@ -199,6 +454,69 @@ def preview_moral_file(filepath: str) -> dict:
 
 
 @eel.expose
+def analyze_import_file(filepath: str, module_type: str) -> dict:
+    return analyze_import_file_impl(filepath, module_type)
+
+
+@eel.expose
+def analyze_gpa_course_structure(filepath: str, sheet_mapping: dict = None) -> dict:
+    try:
+        from backend.gpa_course_audit import analyze_gpa_course_structure as analyze
+        return analyze(filepath, sheet_mapping or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def audit_toolbox_applicants(config: dict) -> dict:
+    try:
+        from backend.toolbox_audit import audit_applicants
+        return audit_applicants(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+@eel.expose
+def prepare_award_roster(file_path: str) -> dict:
+    try:
+        from backend.award_eligibility import prepare_roster
+        return prepare_roster(file_path)
+    except Exception as exc:
+        return {'success':False,'error':str(exc)}
+
+@eel.expose
+def audit_award_candidates(config: dict) -> dict:
+    try:
+        from backend.award_eligibility import audit_candidates
+        return audit_candidates(config)
+    except Exception as exc:
+        return {'success':False,'error':str(exc)}
+
+
+@eel.expose
+def export_toolbox_audit(students: list, output_path: str) -> dict:
+    try:
+        from backend.toolbox_audit import export_audit_report
+        return export_audit_report(students or [], output_path)
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def save_import_template(name: str, module_type: str,
+                         fingerprint: str, mappings: dict) -> dict:
+    try:
+        record = save_import_template_impl(name, module_type, fingerprint, mappings or {})
+        return {'success': True, 'template': record}
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def list_import_templates(module_type: str = '') -> list:
+    return list_import_templates_impl(module_type)
+
+
+@eel.expose
 def run_module_b(roster_path: str,
                  absence_files: list, class_absence_files: list,
                  dormitory_files: list, classroom_files: list,
@@ -208,7 +526,7 @@ def run_module_b(roster_path: str,
                  column_mappings: dict = None,
                  manual_scores: dict = None,
                  selected_columns: list = None,
-                 grade_filter: str = 'all') -> dict:
+                 grade_filter: str = 'all', major_filter: str = '') -> dict:
     """Run moral education calculation (Module B).
 
     Args:
@@ -242,10 +560,38 @@ def run_module_b(roster_path: str,
             manual_scores=manual_scores or {},
             selected_columns=selected_columns,
             grade_filter=grade_filter,
+            major_filter=major_filter,
         )
         return result
     except Exception as e:
         return {'success': False, 'error': str(e)}
+
+
+@eel.expose
+def run_moral_vnext(config: dict) -> dict:
+    """Continue a partially completed moral workbook with configurable items."""
+    try:
+        return process_moral_vnext(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def run_moral_fresh(config: dict) -> dict:
+    """Create moral scores from a roster with configurable add/deduct items."""
+    try:
+        return process_moral_fresh(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def list_moral_students(config: dict) -> dict:
+    """List students for project-level batch score entry."""
+    try:
+        return list_moral_students_impl(config or {})
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
 
 
 # ============================================================
@@ -268,6 +614,24 @@ def get_quality_grades(category: str) -> list:
 def get_quality_thresholds() -> dict:
     """Get default threshold settings."""
     return get_thresholds()
+
+
+@eel.expose
+def get_official_quality_presets() -> list:
+    """Return the immutable rule catalog used by the scoring drawer."""
+    return build_official_presets()
+
+
+@eel.expose
+def preview_quality_activity_score(base_score: float, count: int = 1,
+                                   contribution: float = 1.0,
+                                   related: bool = False) -> dict:
+    return calculate_activity_score(base_score, count, contribution, related)
+
+
+@eel.expose
+def validate_quality_manual_score(value: float, score_range=None) -> dict:
+    return validate_manual_score(value, score_range)
 
 
 @eel.expose
@@ -362,11 +726,24 @@ def read_roster_for_quality(roster_path: str) -> dict:
 
 
 @eel.expose
+def recognize_quality_bonus_file(file_path: str, roster: dict) -> dict:
+    """Read an Excel bonus list and match its people against the active roster."""
+    return recognize_quality_bonus_file_impl(file_path, roster)
+
+
+@eel.expose
 def export_quality_with_roster(roster: dict, quality_data: dict,
-                                output_path: str, thresholds=None) -> dict:
+                                output_path: str, thresholds=None,
+                                major_filter: str = '') -> dict:
     """Export quality scores with merged cells and formulas."""
     try:
         from backend.module_c_quality import export_quality_merged
+        from backend.utils.class_utils import class_matches_program
+        if major_filter:
+            roster = {sid: info for sid, info in (roster or {}).items()
+                      if class_matches_program(info.get('class', info.get('班级', '')), major_filter)}
+            quality_data = {sid: value for sid, value in (quality_data or {}).items()
+                            if sid in roster}
         # Normalize thresholds: if dict from JS, convert to list format
         if isinstance(thresholds, dict):
             th_list = []
@@ -386,9 +763,13 @@ def export_quality_with_roster(roster: dict, quality_data: dict,
 
 @eel.expose
 def export_quality_scores_json(class_data: dict, output_path: str,
-                                thresholds=None) -> dict:
+                                thresholds=None, major_filter: str = '') -> dict:
     """Export quality development scores."""
     try:
+        from backend.utils.class_utils import class_matches_program
+        if major_filter:
+            class_data = {name: value for name, value in (class_data or {}).items()
+                          if class_matches_program(name, major_filter)}
         result = export_quality_scores(class_data, output_path, thresholds)
         return result
     except Exception as e:
@@ -405,7 +786,7 @@ def run_module_d(gpa_path: str, moral_path: str,
                  has_sports: bool = False,
                  sports_programs: list = None,
                  column_mappings: dict = None,
-                 grade_filter: str = 'all') -> dict:
+                 grade_filter: str = 'all', major_filter: str = '') -> dict:
     """Run comprehensive evaluation (Module D).
 
     Args:
@@ -431,6 +812,7 @@ def run_module_d(gpa_path: str, moral_path: str,
             sports_programs=sports_programs or [],
             column_mappings=column_mappings or {},
             grade_filter=grade_filter,
+            major_filter=major_filter,
         )
         return result
     except Exception as e:
@@ -688,81 +1070,6 @@ def compare_with_current(prev_file: str, current_data: list) -> dict:
 
 
 # ============================================================
-# AI Assistant (DeepSeek)
-# ============================================================
-
-from backend.ai_assistant import (
-    set_api_key, get_api_key, has_api_key,
-    chat, analyze_file_structure, verify_formula_logic,
-)
-
-
-@eel.expose
-def ai_set_key(key: str) -> bool:
-    """Save DeepSeek API key."""
-    try:
-        set_api_key(key)
-        return True
-    except Exception:
-        return False
-
-
-@eel.expose
-def ai_has_key() -> bool:
-    """Check if API key is configured."""
-    return has_api_key()
-
-
-@eel.expose
-def ai_chat(prompt: str) -> str:
-    """Send a chat message to DeepSeek AI."""
-    return chat(prompt)
-
-
-@eel.expose
-def ai_analyze_file(file_path: str) -> str:
-    """AI analyzes an Excel file's structure and returns recommendations.
-
-    Reads the file, extracts headers and sample data, then asks AI to analyze.
-    """
-    try:
-        from backend.parsers.xls_reader import read_raw_xls
-        import pandas as pd
-
-        df = read_raw_xls(file_path)
-        if df.empty:
-            return '文件为空或无法读取。'
-
-        headers = df.columns.tolist()
-        sample_rows = df.head(3).to_dict(orient='records')
-
-        # Convert to JSON-safe format
-        def safe_val(v):
-            if pd.isna(v) if isinstance(v, float) else v is None:
-                return None
-            if isinstance(v, (int, float)):
-                return v
-            return str(v)
-
-        clean_rows = []
-        for row in sample_rows:
-            clean_rows.append({str(k): safe_val(v) for k, v in row.items()})
-
-        return analyze_file_structure(
-            [str(h) for h in headers],
-            clean_rows,
-        )
-    except Exception as e:
-        return f'分析失败: {str(e)}'
-
-
-@eel.expose
-def ai_verify_formula(formula_desc: str, rules: str) -> str:
-    """AI verifies a formula against expected rules."""
-    return verify_formula_logic(formula_desc, rules)
-
-
-# ============================================================
 # Utility
 # ============================================================
 
@@ -777,6 +1084,106 @@ def get_app_version() -> str:
 # V8.2: Local File Update System
 # ============================================================
 
+_APP_UPDATE_JOBS = {}
+_APP_UPDATE_JOBS_LOCK = threading.Lock()
+_APP_UPDATE_INSTALL_LOCK = threading.Lock()
+_APP_UPDATE_INSTALLING = False
+
+
+def _cloud_sync_is_active() -> bool:
+    with _KDOCS_JOBS_LOCK:
+        return any(not item.get("done") for item in _KDOCS_JOBS.values())
+
+
+def _begin_app_update_install() -> bool:
+    global _APP_UPDATE_INSTALLING
+    with _APP_UPDATE_INSTALL_LOCK:
+        if _APP_UPDATE_INSTALLING:
+            return False
+        _APP_UPDATE_INSTALLING = True
+        return True
+
+
+def _cancel_app_update_install() -> None:
+    global _APP_UPDATE_INSTALLING
+    with _APP_UPDATE_INSTALL_LOCK:
+        _APP_UPDATE_INSTALLING = False
+
+
+@eel.expose
+def app_update_status(force: bool = False) -> dict:
+    """Check the small online release manifest for a newer application."""
+    return get_app_update_status_impl(bool(force))
+
+
+@eel.expose
+def app_update_start_download() -> dict:
+    """Download and verify a program update in a background worker."""
+    job_id = uuid.uuid4().hex
+    with _APP_UPDATE_JOBS_LOCK:
+        active = next(
+            (key for key, value in _APP_UPDATE_JOBS.items() if not value.get("done")),
+            None,
+        )
+        if active:
+            return {"success": True, "job_id": active, "existing": True}
+        _APP_UPDATE_JOBS[job_id] = {
+            "success": True,
+            "job_id": job_id,
+            "done": False,
+            "status": "downloading",
+            "percent": 0,
+            "stage": "正在准备下载",
+        }
+
+    def progress(percent: int, stage: str) -> None:
+        with _APP_UPDATE_JOBS_LOCK:
+            if job_id in _APP_UPDATE_JOBS:
+                _APP_UPDATE_JOBS[job_id].update(
+                    percent=max(0, min(100, int(percent))),
+                    stage=str(stage or "正在下载"),
+                )
+
+    def worker() -> None:
+        result = download_app_update_impl(progress)
+        ok = bool(result.get("success") and result.get("updated"))
+        with _APP_UPDATE_JOBS_LOCK:
+            _APP_UPDATE_JOBS[job_id].update(
+                done=True,
+                status="ready" if ok else ("current" if result.get("success") else "error"),
+                percent=100 if result.get("success") else _APP_UPDATE_JOBS[job_id].get("percent", 0),
+                stage="新版已准备完成" if ok else result.get("message", result.get("error", "下载未完成")),
+                result=result,
+            )
+
+    threading.Thread(target=worker, name=f"app-update-{job_id[:8]}", daemon=True).start()
+    return {"success": True, "job_id": job_id}
+
+
+@eel.expose
+def app_update_get_progress(job_id: str) -> dict:
+    with _APP_UPDATE_JOBS_LOCK:
+        job = _APP_UPDATE_JOBS.get(str(job_id))
+        return dict(job) if job else {"success": False, "error": "找不到该更新任务。"}
+
+
+@eel.expose
+def app_update_install(job_id: str) -> dict:
+    """Apply a verified online update, then close and restart the application."""
+    with _APP_UPDATE_JOBS_LOCK:
+        job = dict(_APP_UPDATE_JOBS.get(str(job_id)) or {})
+    result = job.get("result") or {}
+    if not job.get("done") or not result.get("success") or not result.get("local_path"):
+        return {"success": False, "error": "新版尚未下载完成。"}
+    if _cloud_sync_is_active():
+        return {"success": False, "error": "云表正在同步，请等待同步完成后再更新程序。"}
+    if not _begin_app_update_install():
+        return {"success": False, "error": "程序更新已经开始，请勿重复操作。"}
+    launched = launch_windows_replacement_impl(result["local_path"], result.get("sha256", ""))
+    if not launched.get("success"):
+        _cancel_app_update_install()
+    return launched
+
 @eel.expose
 def verify_new_exe(filepath: str) -> dict:
     """Verify that a file looks like a valid new version exe.
@@ -784,18 +1191,7 @@ def verify_new_exe(filepath: str) -> dict:
     Returns:
         {valid, version, error}
     """
-    try:
-        if not filepath or not os.path.exists(filepath):
-            return {'valid': False, 'error': '文件不存在'}
-        if not filepath.lower().endswith('.exe'):
-            return {'valid': False, 'error': '不是exe文件'}
-        # Check file size (must be > 50MB to be valid)
-        size = os.path.getsize(filepath)
-        if size < 50 * 1024 * 1024:
-            return {'valid': False, 'error': f'文件太小({size/1024/1024:.0f}MB)，可能不完整'}
-        return {'valid': True, 'size': size, 'filename': os.path.basename(filepath)}
-    except Exception as e:
-        return {'valid': False, 'error': str(e)}
+    return inspect_windows_executable_impl(filepath)
 
 
 @eel.expose
@@ -807,51 +1203,16 @@ def install_local_update(new_exe_path: str) -> bool:
 
     Returns True if updater launched successfully.
     """
-    try:
-        import sys as _sys
-
-        if getattr(_sys, 'frozen', False):
-            current_path = _sys.executable
-        else:
-            current_path = _sys.executable
-
-        current_dir = os.path.dirname(current_path)
-        old_name = os.path.basename(current_path)
-
-        updater_path = os.path.join(current_dir, '_updater.bat')
-        with open(updater_path, 'w', encoding='gbk') as f:
-            f.write(f'''@echo off
-chcp 65001 >nul
-title 更新学生综合测评系统...
-echo.
-echo   正在更新学生综合测评系统...
-echo   请勿关闭此窗口
-echo.
-:wait
-timeout /t 2 /nobreak >nul
-tasklist /FI "IMAGENAME eq {old_name}" 2>NUL | find /I "{old_name}" >NUL
-if %errorlevel% == 0 goto wait
-echo   正在替换...
-move /Y "{new_exe_path}" "{current_path}"
-if exist "{current_path}" (
-    echo   更新完成！即将启动...
-    start "" "{current_path}"
-) else (
-    echo   替换失败！请手动操作
-    pause
-)
-del "%~f0" 2>nul
-''')
-
-        subprocess.Popen(
-            ['cmd', '/c', 'start', '更新', updater_path],
-            shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE
-        )
-        return True
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
+    if _cloud_sync_is_active() or not _begin_app_update_install():
         return False
+    inspected = inspect_windows_executable_impl(new_exe_path)
+    if not inspected.get("valid"):
+        _cancel_app_update_install()
+        return False
+    result = launch_windows_replacement_impl(inspected["path"], inspected["sha256"])
+    if not result.get("success"):
+        _cancel_app_update_install()
+    return bool(result.get("success"))
 
 
 @eel.expose
@@ -1049,7 +1410,6 @@ def generate_parent_notice(student_data: dict, semester: str,
         Formatted text notice (can be printed or exported).
     """
     try:
-        from backend.ai_assistant import chat
         prompt = f"""你是一位高校辅导员。请为以下学生撰写一份《学业情况告知书》，语气温和但严肃，适合发给家长。
 
 学生信息：
@@ -1070,8 +1430,7 @@ def generate_parent_notice(student_data: dict, semester: str,
 3. 末尾署名「顿河学院团委秘书处」
 4. 开头直接写您好，不要用尊敬的家长开头
 """
-        notice = chat(prompt)
-        return notice if notice else _generate_simple_notice(student_data, semester, class_avg)
+        return _generate_simple_notice(student_data, semester, class_avg)
     except Exception:
         return _generate_simple_notice(student_data, semester, class_avg)
 
@@ -1188,7 +1547,7 @@ def smart_detect_file_info(file_path: str) -> dict:
             info['grade'] = year_m.group(1)
 
     # Detect major
-    major_keywords = ['顿河交', '顿河土', '顿河信', '国电', '国商']
+    major_keywords = ['顿河交', '顿河土', '顿河信', '国电']
     for mk in major_keywords:
         if mk in basename:
             info['major'] = mk
@@ -1645,11 +2004,21 @@ def _get_class_name_from_zip(zip_path: str) -> str:
     return basename if basename else '未识别班级'
 
 
+def _get_7z_path() -> str:
+    """Get path to the bundled 7z.exe (works in dev and PyInstaller mode)."""
+    import sys as _sys
+    if getattr(_sys, 'frozen', False):
+        base = _sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, 'tools', '7z.exe')
+
+
 def _extract_archive(archive_path: str, dest_dir: str) -> bool:
     """Extract a ZIP/RAR/7z archive to dest_dir.
 
-    ZIP → built-in zipfile (fast, always available)
-    RAR/7z/other → patoolib (universal backend, auto-finds installed tools)
+    ZIP  → built-in zipfile (fast, always available)
+    RAR/7z → bundled 7z.exe (no external dependencies needed)
     """
     ext = os.path.splitext(archive_path)[1].lower()
 
@@ -1658,18 +2027,33 @@ def _extract_archive(archive_path: str, dest_dir: str) -> bool:
             zf.extractall(dest_dir)
         return True
 
-    # All other formats via patoolib
-    try:
-        import patoolib
-        patoolib.extract_archive(archive_path, outdir=dest_dir, interactive=False)
-        return True
-    except ImportError:
-        raise RuntimeError(
-            '需要安装patool库。请在终端运行: pip install patool')
-    except Exception as e:
-        raise RuntimeError(
-            f'解压失败({os.path.basename(archive_path)}): {e}. '
-            '请确保系统已安装WinRAR或7-Zip。')
+    # RAR, 7z, and everything else → bundled 7z.exe
+    sz = _get_7z_path()
+    if os.path.isfile(sz):
+        try:
+            subprocess.run(
+                [sz, 'x', archive_path, f'-o{dest_dir}', '-y'],
+                check=True, capture_output=True, timeout=300,
+                creationflags=0x08000000 if sys.platform == 'win32' else 0,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode('utf-8', errors='replace') if e.stderr else ''
+            raise RuntimeError(f'解压失败({os.path.basename(archive_path)}): {stderr[:200]}')
+        except Exception as e:
+            raise RuntimeError(f'解压失败({os.path.basename(archive_path)}): {e}')
+    else:
+        # Fallback: try patoolib (requires system WinRAR/7-Zip)
+        try:
+            import patoolib
+            patoolib.extract_archive(archive_path, outdir=dest_dir, interactive=False)
+            return True
+        except ImportError:
+            raise RuntimeError('需要安装patool库。请在终端运行: pip install patool')
+        except Exception as e:
+            raise RuntimeError(
+                f'解压失败({os.path.basename(archive_path)}): {e}. '
+                '请确保系统已安装WinRAR或7-Zip。')
 
 
 def _flatten_single_child_folders(dir_path: str) -> int:
@@ -2208,7 +2592,8 @@ def delete_material_item(base_dir: str, rel_path: str) -> dict:
 
 
 @eel.expose
-def add_files_to_student(base_dir: str, student_rel_path: str) -> dict:
+def add_files_to_student(base_dir: str, student_rel_path: str,
+                         selected_paths: list = None) -> dict:
     """Open file picker and copy selected files into student folder.
 
     Returns:
@@ -2218,16 +2603,12 @@ def add_files_to_student(base_dir: str, student_rel_path: str) -> dict:
     if not os.path.exists(dest_dir):
         return {'success': False, 'error': '学生目录不存在'}
 
-    # Open file picker
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True)
-    paths = filedialog.askopenfilenames(
-        title='选择要添加的文件',
-        filetypes=[('所有支持的文件',
-                    '*.jpg *.jpeg *.png *.gif *.bmp *.pdf *.doc *.docx'),
-                   ('所有文件', '*.*')])
-    root.destroy()
+    paths = selected_paths
+    if paths is None:
+        paths = select_files(
+            title='选择要添加的文件',
+            file_types=[('图片和文档', '*.jpg *.jpeg *.png *.gif *.bmp *.pdf *.doc *.docx'),
+                        ('所有文件', '*.*')])
 
     if not paths:
         return {'success': False, 'error': '未选择文件', 'added_files': []}

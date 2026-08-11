@@ -7,13 +7,14 @@ Output: dist/顿河学院学生测评管理软件.app
 
 import sys
 import os
+import re
 from pathlib import Path
 
 block_cipher = None
 
-# Find eel package path
-import eel as _eel
-_eel_dir = os.path.dirname(_eel.__file__)
+config_text = Path('config.py').read_text(encoding='utf-8')
+version_match = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)', config_text)
+app_version = version_match.group(1) if version_match else '0.0.0'
 
 # Icon — prefer .icns on macOS; fall back to .png (PyInstaller >=6 can use PNG)
 _icon_path = None
@@ -25,17 +26,18 @@ for candidate in ['logo.icns', 'logo.png', '../logo.png']:
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=[('vendor/kdocs-cli', '.')],
     datas=[
         ('web', 'web'),
-        ('data', 'data'),
-        (os.path.join(_eel_dir, 'eel.js'), 'eel'),
         ('config.py', '.'),
         ('backend', 'backend'),
+        (os.path.join('outputs', 'moral-project-templates'), 'moral_templates'),
     ],
     hiddenimports=[
         'eel',
-        'eel.browsers',
+        'webview',
+        'webview.http',
+        'webview.platforms.cocoa',
         'bottle',
         'bottle_websocket',
         'gevent',
@@ -44,13 +46,21 @@ a = Analysis(
         'openpyxl',
         'xlrd',
         'backend',
+        'backend.api',
         'backend.bridge',
         'backend.module_a_gpa',
         'backend.module_b_moral',
         'backend.module_c_quality',
         'backend.module_d_comprehensive',
         'backend.course_analyzer',
-        'backend.ai_assistant',
+        'backend.award_eligibility',
+        'backend.gpa_course_audit',
+        'backend.import_studio',
+        'backend.kdocs_sync',
+        'backend.moral_cloud',
+        'backend.moral_templates',
+        'backend.moral_vnext',
+        'backend.toolbox_audit',
         'backend.parsers',
         'backend.parsers.xls_reader',
         'backend.parsers.course_header_parser',
@@ -127,8 +137,9 @@ app = BUNDLE(
         'NSHighResolutionCapable': 'True',
         'CFBundleDisplayName': '顿河学院学生测评管理软件',
         'CFBundleName': '顿河学院学生测评管理软件',
-        'CFBundleShortVersionString': '7.1.0',
-        'CFBundleVersion': '7.1.0',
+        'CFBundleShortVersionString': app_version,
+        'CFBundleVersion': app_version,
+        'LSMinimumSystemVersion': '12.0',
         'NSHumanReadableCopyright': '© 2026 顿河学院团委秘书处',
     },
 )

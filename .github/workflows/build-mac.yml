@@ -1,21 +1,22 @@
-name: Build macOS DMG
+name: Build macOS app
 
 on:
-  push:
-    branches: [main, master]
-    tags: ['v*']        # 推送 tag 时触发，自动创建 Release
-  workflow_dispatch:   # 允许手动触发
+  workflow_dispatch:
     inputs:
       version:
-        description: '版本号 (例如 7.1.0)'
+        description: "版本号（留空则使用 config.py）"
         required: false
-        default: '7.1.0'
+        default: "14.0.9"
+  push:
+    branches: [main, master, "macos-*"]
+    tags: ["v*"]
 
 jobs:
   build-mac:
-    runs-on: macos-latest
+    name: macOS arm64
+    runs-on: macos-15
     permissions:
-      contents: write   # 允许创建 Release
+      contents: write
 
     steps:
       - name: 检出代码
@@ -24,196 +25,121 @@ jobs:
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
+          cache: pip
 
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          pip install eel pandas openpyxl xlrd bottle bottle-websocket
-          pip install gevent gevent-websocket
-          pip install pyinstaller Pillow
+          python -m pip install -r requirements.txt Pillow
 
-      - name: 生成 Mac 图标 (.icns)
+      - name: 验证当前架构与核心模块
         run: |
-          # 优先用 logo.png → .icns
-          if [ -f "logo.png" ]; then
-            mkdir -p logo.iconset
-            sips -z 16 16     logo.png --out logo.iconset/icon_16x16.png
-            sips -z 32 32     logo.png --out logo.iconset/icon_16x16@2x.png
-            sips -z 32 32     logo.png --out logo.iconset/icon_32x32.png
-            sips -z 64 64     logo.png --out logo.iconset/icon_32x32@2x.png
-            sips -z 128 128   logo.png --out logo.iconset/icon_128x128.png
-            sips -z 256 256   logo.png --out logo.iconset/icon_128x128@2x.png
-            sips -z 256 256   logo.png --out logo.iconset/icon_256x256.png
-            sips -z 512 512   logo.png --out logo.iconset/icon_256x256@2x.png
-            sips -z 512 512   logo.png --out logo.iconset/icon_512x512.png
-            sips -z 1024 1024 logo.png --out logo.iconset/icon_512x512@2x.png
-            iconutil -c icns logo.iconset
-            rm -rf logo.iconset
-            echo "✅ logo.icns created"
-          else
-            echo "⚠️  No logo.png found, skipping icon"
+          python - <<'PY'
+          import platform
+          from backend.moral_vnext import build_moral_preview
+          from backend.api import DesktopApi
+          print("machine:", platform.machine())
+          print("DesktopApi:", DesktopApi.__name__)
+          print("moral engine:", build_moral_preview.__name__)
+          PY
+          test "$(uname -m)" = "arm64"
+
+      - name: 下载并校验金山文档 CLI
+        env:
+          KDOCS_CLI_VERSION: "2.6.0"
+          KDOCS_CLI_SHA256: "66f09cb187b0e929a8a6d1ce4c3e6cea347c80de75d615ed5d90269cdb70dbe2"
+        run: |
+          mkdir -p vendor .kdocs-download
+          ARCHIVE="kdocs-cli-${KDOCS_CLI_VERSION}-darwin-arm64.tar.gz"
+          URL="https://wpsai.wpscdn.cn/skillhub/pro/v${KDOCS_CLI_VERSION}/releases/${ARCHIVE}"
+          curl --fail --location --retry 3 --output ".kdocs-download/${ARCHIVE}" "$URL"
+          echo "${KDOCS_CLI_SHA256}  .kdocs-download/${ARCHIVE}" | shasum -a 256 -c -
+          tar -xzf ".kdocs-download/${ARCHIVE}" -C .kdocs-download
+          CLI_PATH="$(find .kdocs-download -type f -name kdocs-cli -print -quit)"
+          test -n "$CLI_PATH"
+          install -m 755 "$CLI_PATH" vendor/kdocs-cli
+          test "$(vendor/kdocs-cli version | head -n 1 | tr -d '\r')" != ""
+
+      - name: 生成 macOS 图标
+        run: |
+          mkdir -p logo.iconset
+          sips -z 16 16 logo.png --out logo.iconset/icon_16x16.png
+          sips -z 32 32 logo.png --out logo.iconset/icon_16x16@2x.png
+          sips -z 32 32 logo.png --out logo.iconset/icon_32x32.png
+          sips -z 64 64 logo.png --out logo.iconset/icon_32x32@2x.png
+          sips -z 128 128 logo.png --out logo.iconset/icon_128x128.png
+          sips -z 256 256 logo.png --out logo.iconset/icon_128x128@2x.png
+          sips -z 256 256 logo.png --out logo.iconset/icon_256x256.png
+          sips -z 512 512 logo.png --out logo.iconset/icon_256x256@2x.png
+          sips -z 512 512 logo.png --out logo.iconset/icon_512x512.png
+          sips -z 1024 1024 logo.png --out logo.iconset/icon_512x512@2x.png
+          iconutil -c icns logo.iconset
+          rm -rf logo.iconset
+
+      - name: 构建 .app
+        run: |
+          python -m PyInstaller --clean --noconfirm build_mac.spec
+          test -d "dist/顿河学院学生测评管理软件.app"
+          test -x "dist/顿河学院学生测评管理软件.app/Contents/MacOS/顿河学院学生测评管理软件"
+          python - <<'PY'
+          from pathlib import Path
+          toc_files = list(Path("build").rglob("Analysis-00.toc"))
+          assert toc_files, "PyInstaller analysis manifest not found"
+          assert any("kdocs-cli" in path.read_text(encoding="utf-8", errors="ignore") for path in toc_files)
+          print("bundled kdocs-cli: verified")
+          PY
+
+      - name: 临时签名并验证应用
+        run: |
+          codesign --force --deep --sign - "dist/顿河学院学生测评管理软件.app"
+          codesign --verify --deep --strict --verbose=2 "dist/顿河学院学生测评管理软件.app"
+          plutil -p "dist/顿河学院学生测评管理软件.app/Contents/Info.plist"
+
+      - name: 启动冒烟测试
+        run: |
+          APP_BIN="dist/顿河学院学生测评管理软件.app/Contents/MacOS/顿河学院学生测评管理软件"
+          "$APP_BIN" > app-startup.log 2>&1 &
+          APP_PID=$!
+          sleep 12
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            cat app-startup.log
+            exit 1
           fi
+          kill "$APP_PID" || true
+          wait "$APP_PID" 2>/dev/null || true
 
-      - name: PyInstaller 打包
-        run: |
-          python -m PyInstaller --clean build_mac.spec
-          echo "✅ .app built"
-
-      - name: 创建专业 DMG
+      - name: 创建 DMG
         run: |
           APP_NAME="顿河学院学生测评管理软件"
-          DMG_NAME="${APP_NAME}.dmg"
-          STAGING="dist/.dmg_staging"
-
+          DMG_PATH="dist/${APP_NAME}-macOS-arm64.dmg"
+          STAGING="dist/dmg-arm64"
           mkdir -p "$STAGING"
           cp -R "dist/${APP_NAME}.app" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
-
-          # 生成 DMG 背景图（PIL 可用时美化，不可用时跳过）
-          python3 - "$STAGING" << 'PYEOF'
-          import sys, os, traceback
-          staging = sys.argv[1]
-          bg_path = os.path.join(staging, 'dmg_bg.png')
-          try:
-              from PIL import Image, ImageDraw, ImageFont
-              w, h = 660, 400
-              img = Image.new('RGB', (w, h), color=(245, 245, 248))
-              draw = ImageDraw.Draw(img)
-              for i in range(120):
-                  c = 240 - i // 3
-                  draw.line([(0, i), (w, i)], fill=(c, c, 252))
-              # 尝试多个字体路径，兼容不同 macOS 版本
-              font = None
-              font_sm = None
-              for font_path in [
-                  '/System/Library/Fonts/PingFang.ttc',
-                  '/System/Library/Fonts/STHeiti Light.ttc',
-                  '/System/Library/Fonts/STHeiti Medium.ttc',
-                  '/Library/Fonts/Arial Unicode.ttf',
-              ]:
-                  try:
-                      font = ImageFont.truetype(font_path, 22, index=0)
-                      font_sm = ImageFont.truetype(font_path, 13, index=0)
-                      break
-                  except Exception:
-                      continue
-              if font is None:
-                  font = ImageFont.load_default()
-                  font_sm = ImageFont.load_default()
-              draw.text((160, 280), "<-  Drag to Applications to install",
-                        fill=(80, 80, 90), font=font)
-              draw.text((270, 230), "Dunhe Student Evaluation",
-                        fill=(60, 60, 72), font=font_sm)
-              img.save(bg_path)
-              print("DMG background image created")
-          except Exception as e:
-              # 任何错误都不阻塞构建 — 回退到无背景 DMG
-              print(f"Background image skipped: {e}")
-              traceback.print_exc()
-              open(bg_path, 'w').close()
-          PYEOF
-
-          # 创建未压缩 DMG（UDRW，用于布局定制）
-          echo "Creating writable DMG..."
           hdiutil create \
-              -volname "DunheStudentEval" \
-              -srcfolder "$STAGING" \
-              -ov -format UDRW \
-              "${STAGING}.dmg" \
-              -fs HFS+ \
-              -size 800M
+            -volname "${APP_NAME}" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            "$DMG_PATH"
+          rm -rf "$STAGING"
+          shasum -a 256 "$DMG_PATH" > "${DMG_PATH}.sha256"
 
-          # 可选：挂载并美化 DMG 布局（失败不影响最终产物）
-          echo "Customizing DMG layout..."
-          DEV=$(hdiutil attach "${STAGING}.dmg" -nobrowse -noautoopen 2>/dev/null | grep '/dev/' | head -1 | awk '{print $1}')
-          if [ -n "$DEV" ]; then
-              VOL="/Volumes/DunheStudentEval"
-              # 复制背景图（如果存在且非空）
-              if [ -s "${STAGING}/dmg_bg.png" ]; then
-                  mkdir -p "${VOL}/.background" 2>/dev/null || true
-                  cp "${STAGING}/dmg_bg.png" "${VOL}/.background/" 2>/dev/null || true
-                  # 设置背景图
-                  osascript << 'APPLESCRIPT' 2>/dev/null || true
-          tell application "Finder"
-              tell disk "DunheStudentEval"
-                  open
-                  set current view of container window to icon view
-                  set toolbar visible of container window to false
-                  set statusbar visible of container window to false
-                  set the bounds of container window to {200, 150, 860, 550}
-                  set viewOptions to the icon view options of container window
-                  set arrangement of viewOptions to not arranged
-                  set icon size of viewOptions to 80
-                  set background picture of viewOptions to file ".background:dmg_bg.png"
-                  close
-                  open
-                  update without registering applications
-                  delay 1
-              end tell
-          end tell
-          APPLESCRIPT
-              fi
-
-              # 设置图标位置（不依赖背景图）
-              osascript << 'APPLESCRIPT' 2>/dev/null || true
-          tell application "Finder"
-              tell disk "DunheStudentEval"
-                  open
-                  set current view of container window to icon view
-                  set toolbar visible of container window to false
-                  set statusbar visible of container window to false
-                  set the bounds of container window to {200, 150, 860, 550}
-                  set viewOptions to the icon view options of container window
-                  set arrangement of viewOptions to not arranged
-                  set icon size of viewOptions to 80
-                  set position of item "顿河学院学生测评管理软件.app" to {160, 160}
-                  set position of item "Applications" to {420, 160}
-                  close
-                  open
-                  update without registering applications
-                  delay 1
-              end tell
-          end tell
-          APPLESCRIPT
-              sleep 1
-              hdiutil detach "$DEV" -quiet -force 2>/dev/null || true
-              echo "DMG layout customized"
-          else
-              echo "DMG layout skipped (could not mount for customization)"
-          fi
-
-          # 压缩为最终 DMG
-          echo "Converting to compressed DMG..."
-          hdiutil convert "${STAGING}.dmg" \
-              -format UDZO \
-              -imagekey zlib-level=9 \
-              -o "dist/${DMG_NAME}"
-
-          rm -rf "$STAGING" "${STAGING}.dmg"
-          echo "✅ DMG created: dist/${DMG_NAME}"
-          ls -lh "dist/${DMG_NAME}"
-
-      - name: 上传 DMG (Artifact)
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: 顿河学院学生测评管理软件-macOS
-          path: dist/顿河学院学生测评管理软件.dmg
+          name: 顿河学院学生测评管理软件-macOS-arm64
+          path: |
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg.sha256
           retention-days: 30
+          if-no-files-found: error
 
-      - name: 上传 .app 备用 (Artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: 顿河学院学生测评管理软件-macOS-app
-          path: dist/顿河学院学生测评管理软件.app
-          retention-days: 30
-
-      # ── 如果推送了 tag，自动创建 GitHub Release ──────────────────
       - name: 发布到 GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           files: |
-            dist/顿河学院学生测评管理软件.dmg
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg
+            dist/顿河学院学生测评管理软件-macOS-arm64.dmg.sha256
           generate_release_notes: true

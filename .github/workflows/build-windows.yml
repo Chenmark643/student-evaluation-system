@@ -1,0 +1,143 @@
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本号（必须与 config.py 一致）"
+        required: true
+        default: "14.0.9"
+      publish:
+        description: "构建完成后发布为最新 Release"
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-windows:
+    name: Windows x64
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 确认发布版本
+        shell: pwsh
+        run: |
+          $configVersion = python -c "from config import APP_VERSION; print(APP_VERSION)"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tagVersion = "${{ github.ref_name }}".TrimStart("v")
+            if ($tagVersion -ne $configVersion) {
+              throw "标签版本 $tagVersion 与 config.py $configVersion 不一致"
+            }
+          } elseif ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $inputVersion = "${{ inputs.version }}".TrimStart("v")
+            if ($inputVersion -ne $configVersion) {
+              throw "输入版本 $inputVersion 与 config.py $configVersion 不一致"
+            }
+          }
+          "RELEASE_VERSION=$configVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: 下载并校验金山文档 CLI
+        shell: pwsh
+        env:
+          KDOCS_CLI_VERSION: "2.6.0"
+          KDOCS_CLI_SHA256: "D0C4F57DBE9C34DECBAEE446644DA1904712241313A67BC92FC7C2E17E74EC93"
+        run: |
+          New-Item -ItemType Directory -Force -Path vendor, .kdocs-download | Out-Null
+          $archive = "kdocs-cli-$env:KDOCS_CLI_VERSION-windows-amd64.zip"
+          $url = "https://wpsai.wpscdn.cn/skillhub/pro/v$env:KDOCS_CLI_VERSION/releases/$archive"
+          Invoke-WebRequest -Uri $url -OutFile ".kdocs-download/$archive"
+          $actual = (Get-FileHash ".kdocs-download/$archive" -Algorithm SHA256).Hash
+          if ($actual -ne $env:KDOCS_CLI_SHA256) { throw "kdocs-cli SHA256 校验失败" }
+          Expand-Archive ".kdocs-download/$archive" -DestinationPath .kdocs-download/extracted -Force
+          Copy-Item ".kdocs-download/extracted/kdocs-cli.exe" "vendor/kdocs-cli.exe" -Force
+          ./vendor/kdocs-cli.exe version
+
+      - name: 运行测试
+        run: |
+          python -m unittest discover -s tests
+          node --check web/js/main.js
+          node --check web/js/modules/counselor.js
+
+      - name: 构建单文件程序
+        run: |
+          python -m PyInstaller --clean --noconfirm build.spec
+          if (!(Test-Path "dist/DonCollege-Student-Evaluation.exe")) { throw "主程序构建失败" }
+
+      - name: 启动构建产物冒烟测试
+        shell: pwsh
+        run: |
+          $app = (Resolve-Path "dist/DonCollege-Student-Evaluation.exe").Path
+          $process = Start-Process -FilePath $app -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 12
+          $process.Refresh()
+          if ($process.HasExited) {
+            $log = Join-Path $env:LOCALAPPDATA "顿河学院学生测评管理软件/startup.log"
+            if (Test-Path $log) { Get-Content $log -Tail 80 }
+            throw "构建产物启动后提前退出，拒绝发布"
+          }
+          Stop-Process -Id $process.Id -Force
+          Wait-Process -Id $process.Id -ErrorAction SilentlyContinue
+
+      - name: 生成在线更新文件
+        shell: pwsh
+        run: |
+          $asset = "DonCollege-Student-Evaluation-windows-x64.exe"
+          Copy-Item "dist/DonCollege-Student-Evaluation.exe" "dist/$asset" -Force
+          $file = Get-Item "dist/$asset"
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Set-Content "dist/$asset.sha256" -Encoding utf8
+          $manifest = [ordered]@{
+            schema = 1
+            version = $env:RELEASE_VERSION
+            platform = "windows-x64"
+            url = "https://github.com/${{ github.repository }}/releases/download/v$env:RELEASE_VERSION/$asset"
+            sha256 = $hash
+            size = $file.Length
+            notes = "程序在线更新、云表格组件自动升级，以及本版本的功能改进与问题修复。"
+            published_at = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $manifest | ConvertTo-Json | Set-Content "dist/update-windows.json" -Encoding utf8
+          Get-Content "dist/update-windows.json"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 顿河学院学生测评管理软件-Windows-x64
+          path: |
+            dist/DonCollege-Student-Evaluation-windows-x64.exe
+            dist/DonCollege-Student-Evaluation-windows-x64.exe.sha256
+            dist/update-windows.json
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.RELEASE_VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: v${{ env.RELEASE_VERSION }}
+          make_latest: true
+          files: |
+            dist/DonCollege-Student-Evaluation-windows-x64.exe
+            dist/DonCollege-Student-Evaluation-windows-x64.exe.sha256
+            dist/update-windows.json
+          generate_release_notes: true

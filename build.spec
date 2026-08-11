@@ -11,23 +11,33 @@ from pathlib import Path
 block_cipher = None
 
 # Find eel package path
-import eel as _eel
-_eel_dir = os.path.dirname(_eel.__file__)
+app_datas = [
+    ('web', 'web'),
+    ('config.py', '.'),
+    ('backend', 'backend'),
+    ('tools', 'tools'),
+    (os.path.join('outputs', 'moral-project-templates'), 'moral_templates'),
+    (os.path.join('web', 'assets', 'emoji'), os.path.join('web', 'assets', 'emoji')),
+    (os.path.join('web', 'js', 'emoji-replace.js'), os.path.join('web', 'js')),
+]
+
+vendor_cli = Path('vendor') / 'kdocs-cli.exe'
+installed_cli = Path(os.environ.get('LOCALAPPDATA', '')) / 'kdocs-cli' / 'kdocs-cli.exe'
+kdocs_cli = vendor_cli if vendor_cli.is_file() else installed_cli
+app_binaries = [(str(kdocs_cli), '.')] if kdocs_cli.is_file() else []
 
 a = Analysis(
     ['main.py'],
     pathex=['.'],
-    binaries=[],
-    datas=[
-        ('web', 'web'),
-        ('data', 'data'),
-        (os.path.join(_eel_dir, 'eel.js'), 'eel'),
-        ('config.py', '.'),
-        ('backend', 'backend'),
-    ],
+    binaries=app_binaries,
+    datas=app_datas,
     hiddenimports=[
         'eel',
-        'eel.browsers',
+        'webview',
+        'webview.http',
+        'webview.platforms.winforms',
+        'clr',
+        'pythonnet',
         'bottle',
         'bottle_websocket',
         'gevent',
@@ -37,12 +47,13 @@ a = Analysis(
         'xlrd',
         'backend',
         'backend.bridge',
+        'backend.app_update',
         'backend.module_a_gpa',
         'backend.module_b_moral',
         'backend.module_c_quality',
         'backend.module_d_comprehensive',
         'backend.course_analyzer',
-        'backend.ai_assistant',
+        'backend.kdocs_sync',
         'backend.parsers',
         'backend.parsers.xls_reader',
         'backend.parsers.course_header_parser',
@@ -93,7 +104,10 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='顿河学院学生测评管理软件',
+    # Keep the binary filename ASCII. Python 3.8's one-file bootloader fails
+    # during embedded-interpreter initialization when the EXE basename is CJK.
+    # The application window and shortcuts still use the Chinese product name.
+    name='DonCollege-Student-Evaluation',
     icon='logo.ico',
     debug=False,
     bootloader_ignore_signals=False,

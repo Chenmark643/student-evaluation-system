@@ -7,6 +7,7 @@
 
 let compColumnMappings = {};  // {filepath: {sheet: {id_col, name_col, class_col, score_col}}}
 let compGradeFilter = 'all';
+let comprehensiveLastOutputs = { main: '', ranking: '' };
 
 function renderModuleComprehensive() {
     document.getElementById('module-title').textContent = '综合测评计算';
@@ -63,12 +64,18 @@ function renderModuleComprehensive() {
 
         <div id="comp-progress-area"></div>
         <div class="actions-row">
-            <button class="btn btn-ghost btn-sm" onclick="compAskAI()">🤖 AI助手</button>
             <button class="btn btn-ghost" onclick="resetModuleComp()">重置</button>
             <button class="btn btn-primary" id="comp-process-btn" onclick="processComp()">开始计算</button>
         </div>
         <div id="comp-result-area"></div>
     `;
+    const finishedMoral = CompletionCelebration.state().moral?.detail || '';
+    if (finishedMoral && CompletionCelebration.state().moral?.done) {
+        const input = document.getElementById('comp-moral-file');
+        if (input) { input.value = finishedMoral; input.classList.add('has-file'); }
+        const status = document.getElementById('comp-moral-mapping-status');
+        if (status) status.textContent = '已带入上传的德育分成品，请点击“检查与映射”确认';
+    }
 }
 
 function _compFileMapped(id, label, placeholder) {
@@ -78,10 +85,29 @@ function _compFileMapped(id, label, placeholder) {
             <input id="${id}-file" class="file-path" readonly placeholder="${placeholder}...">
             <button class="btn btn-secondary btn-sm" onclick="pickFile('${id}-file','选择${label.replace(/📊|📋|⭐/,'')}',[['Excel文件','*.xlsx']])">浏览</button>
             <button class="btn btn-ghost btn-sm" style="color:var(--accent-secondary);"
-                    onclick="compPreviewFile('${id}')">👁 映射</button>
+                    onclick="compOpenImportStudio('${id}')">检查与映射</button>
         </div>
         <div id="${id}-mapping-status" style="font-size:10px;color:var(--text-muted);margin-left:112px;"></div>
     </div>`;
+}
+
+async function compOpenImportStudio(fileId) {
+    const filepath = document.getElementById(fileId + '-file')?.value?.trim();
+    if (!filepath) { showToast('请先选择文件', 'warning'); return; }
+    const typeMap = {'comp-gpa':'gpa','comp-moral':'moral','comp-quality':'quality'};
+    const labelMap = {'comp-gpa':'学分绩点','comp-moral':'德育分','comp-quality':'素拓分'};
+    await ImportStudio.open({
+        path: filepath,
+        moduleType: typeMap[fileId],
+        title: `${labelMap[fileId]} · 导入工作台`,
+        onConfirm: (mappings, analysis) => {
+            compColumnMappings[filepath] = mappings;
+            const enabled = Object.values(mappings).filter(m => m.enabled).length;
+            const rows = analysis.sheets.filter((_,i)=>Object.values(mappings)[i]?.enabled).reduce((n,s)=>n+(s.valid_rows||0),0);
+            const status = document.getElementById(fileId + '-mapping-status');
+            if (status) status.innerHTML = `<span class="import-file-health"><strong>✓ 已配置</strong><span>${enabled} 个工作表 · ${rows} 条候选数据</span></span>`;
+        }
+    });
 }
 
 // ============================================================
@@ -235,6 +261,7 @@ function compAskAI() {
 function resetModuleComp() {
     compColumnMappings = {};
     compGradeFilter = 'all';
+    comprehensiveLastOutputs = { main: '', ranking: '' };
     ['comp-gpa','comp-moral','comp-quality'].forEach(id => {
         const el = document.getElementById(id+'-file');
         if (el) { el.value = ''; el.classList.remove('has-file'); }
@@ -253,12 +280,18 @@ function resetModuleComp() {
 // Process
 // ============================================================
 async function processComp() {
+    if (!MajorScope.requireForExport()) return;
     const gpaFile = document.getElementById('comp-gpa-file').value.trim();
     const moralFile = document.getElementById('comp-moral-file').value.trim();
     const qualityFile = document.getElementById('comp-quality-file').value.trim();
     const outputDir = document.getElementById('comp-output-dir').value.trim();
     if (!gpaFile || !moralFile || !qualityFile) { showToast('请选择所有三个文件', 'warning'); return; }
     if (!outputDir) { showToast('请选择输出目录', 'warning'); return; }
+    const unconfigured = [gpaFile, moralFile, qualityFile].filter(path => !compColumnMappings[path]);
+    if (unconfigured.length) {
+        showToast('请先对三个源文件执行“检查与映射”', 'warning');
+        return;
+    }
 
     const mode = document.querySelector('input[name="comp-sports-mode"]:checked').value;
     let hasSports = false, sportsPrograms = [];
@@ -288,9 +321,10 @@ async function processComp() {
     try {
         const result = await eel.run_module_d(
             gpaFile, moralFile, qualityFile, outputDir,
-            hasSports, sportsPrograms, colMappings, compGradeFilter
+            hasSports, sportsPrograms, colMappings, compGradeFilter, MajorScope.get()
         )();
         if (result.success) {
+            comprehensiveLastOutputs = { main: result.output1, ranking: result.output2 };
             document.getElementById('comp-result-area').innerHTML = `
                 <div class="result-card">
                     <div class="result-stat"><div class="stat-value">${result.student_count}</div><div class="stat-label">学生</div></div>
@@ -299,8 +333,11 @@ async function processComp() {
                     <div class="result-actions">
                         <button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output1.replace(/\\/g,'\\\\')}')()">📂 综测表</button>
                         <button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output2.replace(/\\/g,'\\\\')}')()">📂 排名表</button>
+                        <button data-cloud-sync-id="comprehensive-main" class="btn btn-primary btn-sm" onclick="CloudSync.request('comprehensive-main')">☁ 同步综测云表</button>
+                        <button data-cloud-sync-id="comprehensive-ranking" class="btn btn-primary btn-sm" onclick="CloudSync.request('comprehensive-ranking')">☁ 同步综测排名</button>
                     </div>
                 </div>`;
+            CompletionCelebration.mark('comprehensive', result.output1);
             showOutputDialog(true, `成功计算 ${result.student_count} 名学生的综测成绩`,
                 [result.output1, result.output2]);
         } else { showOutputDialog(false, result.error || '处理失败'); }

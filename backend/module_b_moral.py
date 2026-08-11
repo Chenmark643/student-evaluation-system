@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Module B: Moral Education Score (德育分计算)
 
@@ -17,6 +18,7 @@ from openpyxl.utils import get_column_letter
 from backend.parsers.xls_reader import read_xlsx_sheets
 from backend.utils.progress_reporter import ProgressReporter
 from backend.utils.excel_writer import write_values_sheet, unique_path
+from backend.utils.class_utils import class_matches_program
 
 
 # Output column headers
@@ -47,6 +49,7 @@ def process_moral_education(
     manual_scores: dict = None,
     selected_columns: list = None,
     grade_filter: str = 'all',
+    major_filter: str = '',
 ) -> dict:
     """Process moral education scores.
 
@@ -190,6 +193,8 @@ def process_moral_education(
     class_groups = {}
     for sid, data in students.items():
         cls = data['班级']
+        if major_filter and not class_matches_program(cls, major_filter):
+            continue
         # Grade filter
         if grade_filter and grade_filter != 'all':
             match = re.search(r'(\d{2})\d{1,2}$', str(cls))
@@ -202,6 +207,9 @@ def process_moral_education(
 
     for cls in class_groups:
         class_groups[cls].sort(key=lambda s: str(s['学号']))
+
+    if not class_groups:
+        raise ValueError(f'当前专业“{major_filter}”在花名册中没有匹配班级，请检查专业名称')
 
     os.makedirs(output_dir, exist_ok=True)
     output_path = unique_path(os.path.join(output_dir, '德育分.xlsx'))
