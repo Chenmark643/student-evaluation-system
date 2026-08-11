@@ -32,7 +32,7 @@ data/*.json
 !data/activity_mappings.json
 data/.deepseek_key
 data/users.db
-data/custom_thresholds.json
+!data/custom_thresholds.json
 .gstack/
 
 # Large binaries

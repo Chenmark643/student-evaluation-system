@@ -31,6 +31,8 @@ a = Analysis(
         ('web', 'web'),
         ('config.py', '.'),
         ('backend', 'backend'),
+        (os.path.join('data', 'activity_mappings.json'), 'factory_data'),
+        (os.path.join('data', 'custom_thresholds.json'), 'factory_data'),
         (os.path.join('outputs', 'moral-project-templates'), 'moral_templates'),
     ],
     hiddenimports=[

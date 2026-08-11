@@ -15,6 +15,8 @@ app_datas = [
     ('web', 'web'),
     ('config.py', '.'),
     ('backend', 'backend'),
+    (os.path.join('data', 'activity_mappings.json'), 'factory_data'),
+    (os.path.join('data', 'custom_thresholds.json'), 'factory_data'),
     ('tools', 'tools'),
     (os.path.join('outputs', 'moral-project-templates'), 'moral_templates'),
     (os.path.join('web', 'assets', 'emoji'), os.path.join('web', 'assets', 'emoji')),

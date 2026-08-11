@@ -6,7 +6,7 @@ on:
       version:
         description: "发布版本号（必须与 config.py 一致）"
         required: true
-        default: "14.0.9"
+        default: "14.0.10"
       publish:
         description: "构建完成后发布为最新 Release"
         required: true

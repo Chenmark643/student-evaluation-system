@@ -27,15 +27,6 @@ PRIMARY_CATEGORIES = {
     '其他加分': '待学院认定',
 }
 
-LEGACY_FACTORY_MAPPINGS = {
-    '英语四级': ('A类', '国家级', 5.0),
-    '英语六级': ('A类', '国家级', 8.0),
-    '计算机二级': ('A类', '国家级', 5.0),
-    '志愿服务': ('志愿类', '时长', 2.0),
-    '学生会工作': ('组织测评', '良好', 5.0),
-}
-
-
 def _slug(value: str) -> str:
     table = {
         '全国': 'national', '国家级': 'national', '省级': 'provincial', '省部级': 'provincial',
@@ -194,22 +185,9 @@ def official_mappings():
     return result
 
 
-def _matches_legacy(name, row):
-    signature = LEGACY_FACTORY_MAPPINGS.get(name)
-    if not signature or not isinstance(row, dict):
-        return False
-    category, grade, score = signature
-    try:
-        return row.get('category') == category and row.get('default_grade') == grade and float(row.get('default_score')) == score
-    except (TypeError, ValueError):
-        return False
-
-
 def merge_official_with_user(user):
     merged = official_mappings()
     for name, row in (user or {}).items():
-        if _matches_legacy(name, row):
-            continue
         clean = deepcopy(row)
         clean['source'] = 'user'
         merged[name] = clean

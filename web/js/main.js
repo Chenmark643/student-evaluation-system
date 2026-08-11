@@ -6,7 +6,7 @@
  * Developer: 陈雨昂 · 顿河学院团委秘书处
  */
 
-const APP_VERSION = '14.0.9';
+const APP_VERSION = '14.0.10';
 let currentModule = 'gpa';
 let inWorkspace = false;
 let kdocsComponentStatus = null;
