@@ -48,14 +48,17 @@ class QualityPresetTests(unittest.TestCase):
         }]})
         self.assertEqual(result['1']['total'], 3.5)
 
-    def test_legacy_factory_rows_are_replaced_but_user_edits_win(self):
+    def test_existing_legacy_named_rows_are_preserved_as_user_presets(self):
         from backend.quality_presets import merge_official_with_user
 
         legacy = {'英语四级': {
             'category': 'A类', 'default_grade': '国家级',
             'default_score': 5, 'last_used': '',
         }}
-        self.assertNotIn('英语四级', merge_official_with_user(legacy))
+        merged = merge_official_with_user(legacy)
+        self.assertIn('英语四级', merged)
+        self.assertEqual(merged['英语四级']['source'], 'user')
+        self.assertEqual(merged['英语四级']['default_score'], 5)
         edited = {'英语四级': {**legacy['英语四级'], 'default_score': 2.25}}
         self.assertEqual(merge_official_with_user(edited)['英语四级']['default_score'], 2.25)
 

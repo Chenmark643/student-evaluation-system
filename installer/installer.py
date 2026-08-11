@@ -19,7 +19,7 @@ APP_NAME = '顿河学院学生测评管理软件'
 APP_EXE = 'DonCollege-Student-Evaluation.exe'
 DEFAULT_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
                            APP_NAME)
-VERSION = '14.0.9'
+VERSION = '14.0.10'
 
 # ── Fonts ──────────────────────────────────────────────────────────────
 # Use system default fonts for maximum compatibility with Chinese text.
@@ -1113,12 +1113,17 @@ class InstallerApp:
             self.progress['value'] = 450 / steps
             self._log('  复制数据文件...')
             if os.path.isdir(SOURCE_DATA):
-                dest_data = os.path.join(dest, 'data')
+                dest_data = os.path.join(
+                    os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
+                    APP_NAME,
+                    'data',
+                )
                 os.makedirs(dest_data, exist_ok=True)
                 for f in os.listdir(SOURCE_DATA):
                     src_f = os.path.join(SOURCE_DATA, f)
-                    if os.path.isfile(src_f):
-                        shutil.copy2(src_f, os.path.join(dest_data, f))
+                    dest_f = os.path.join(dest_data, f)
+                    if os.path.isfile(src_f) and not os.path.exists(dest_f):
+                        shutil.copy2(src_f, dest_f)
                         self._log(f'    {f}')
             self._log('  ✓ 配置文件就绪')
 

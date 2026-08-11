@@ -56,6 +56,18 @@ class QualityMaterialWorkspaceTests(unittest.TestCase):
         self.assertIsNotNone(setter)
         self.assertIn('renderThresholdSummary', setter.group(0))
 
+    def test_preset_and_cap_management_are_visible_from_the_workspace(self):
+        js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
+        css = (ROOT / 'web' / 'css' / 'quality-material-workspace.css').read_text(encoding='utf-8')
+        self.assertIn('quality-preset-management', js)
+        self.assertIn('管理加分项预设', js)
+        self.assertIn('管理上限预设', js)
+        self.assertIn('onclick="qualityManageMappings()"', js)
+        self.assertIn('onclick="qualityImportShowThresholds()"', js)
+        self.assertIn('quality-official-preset-row', js)
+        self.assertIn("info?.source === 'official'", js)
+        self.assertIn('.quality-preset-management-actions', css)
+
     def test_threshold_editor_refreshes_the_new_drawer_not_legacy_markup(self):
         js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
         match = re.search(r'function qualityImportRefreshAfterThreshold\(\).*?(?=\n\s*(?:async )?function)', js, re.S)
@@ -64,6 +76,17 @@ class QualityMaterialWorkspaceTests(unittest.TestCase):
         self.assertIn('QualityMaterialDrawer.setThresholds', body)
         self.assertIn('qualityBatchRenderCapHint', body)
         self.assertNotIn('qualityImportRenderViewerScores', body)
+
+    def test_threshold_editor_loads_presets_when_opened(self):
+        js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')
+        match = re.search(
+            r'async function qualityImportShowThresholds\(\).*?(?=\n\s*function qualityImportUpdateThreshold)',
+            js, re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group(0)
+        self.assertIn('if (!qualityThresholds.length) qualityThresholds = await qualityLoadThresholds();', body)
+        self.assertIn('暂无上限预设', body)
 
     def test_frontend_fallback_keeps_the_six_current_caps(self):
         js = (ROOT / 'web' / 'js' / 'modules' / 'quality.js').read_text(encoding='utf-8')

@@ -3,6 +3,7 @@ Global constants and configuration for the Student Evaluation System.
 """
 
 import os
+import shutil
 import sys
 
 
@@ -31,6 +32,32 @@ WEB_DIR = os.path.join(BASE_DIR, 'web')
 # Ensure data directory exists
 os.makedirs(DATA_DIR, exist_ok=True)
 
+FACTORY_DATA_FILES = ('activity_mappings.json', 'custom_thresholds.json')
+
+
+def seed_factory_data(source_dir=None, destination_dir=None):
+    """Copy bundled presets once without replacing any user-owned data."""
+    source_dir = source_dir or os.path.join(BASE_DIR, 'factory_data')
+    destination_dir = destination_dir or DATA_DIR
+    os.makedirs(destination_dir, exist_ok=True)
+    copied = []
+    for filename in FACTORY_DATA_FILES:
+        source = os.path.join(source_dir, filename)
+        destination = os.path.join(destination_dir, filename)
+        if not os.path.isfile(source) or os.path.exists(destination):
+            continue
+        try:
+            shutil.copy2(source, destination)
+            copied.append(filename)
+        except OSError:
+            # Read-only or managed machines can still use the built-in catalog.
+            pass
+    return copied
+
+
+if getattr(sys, 'frozen', False):
+    seed_factory_data()
+
 # Activity memory file for Module C
 ACTIVITY_MAPPINGS_FILE = os.path.join(DATA_DIR, 'activity_mappings.json')
 
@@ -39,7 +66,7 @@ WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 
 # App metadata
-APP_VERSION = "14.0.9"
+APP_VERSION = "14.0.10"
 
 # Module A constants
 PE_KEYWORDS = ['体育', '運動', 'PE']

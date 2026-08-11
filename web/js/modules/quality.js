@@ -86,6 +86,18 @@ async function renderModuleQuality() {
             <div id="quality-roster-status" style="margin-top:6px;font-size:11px;color:var(--text-muted);"></div>
         </div>
 
+        ${qualityMode==='auto' || qualityMode==='import'?`
+        <div class="module-section quality-preset-management">
+            <div class="quality-section-title"><span>⚙</span><div><h2>加分项与上限预设</h2><p>这里统一管理官方加分规则、我的常用项目和各类别分数上限</p></div><em>常用设置</em></div>
+            <div class="quality-preset-management-actions">
+                <button class="btn btn-secondary" onclick="qualityManageMappings()">管理加分项预设</button>
+                <button class="btn btn-secondary" onclick="qualityImportShowThresholds()">管理上限预设</button>
+                <button class="btn btn-ghost btn-sm" onclick="qualityManageCategories()">管理类别</button>
+            </div>
+            <p class="quality-preset-management-note">已有设置不会被清空；官方预设只读，我的常用项目可以继续修改或删除。</p>
+        </div>
+        `:''}
+
         ${qualityMode==='auto'?`
         <div class="module-section" id="quality-entry-section" style="display:none;">
             <h2><span class="step-badge">2</span> 录入加分项目</h2>
@@ -235,8 +247,8 @@ async function renderModuleQuality() {
 
         <div class="actions-row" style="margin-top:16px;">
             ${qualityMode==='auto' || qualityMode==='import'?`
-            <button class="btn btn-ghost" onclick="qualityManageMappings()">管理个人项目</button>
-            <button class="btn btn-ghost btn-sm" onclick="qualityManageCategories()">管理类别</button>
+            <button class="btn btn-ghost" onclick="qualityManageMappings()">管理加分项预设</button>
+            <button class="btn btn-ghost btn-sm" onclick="qualityImportShowThresholds()">管理上限预设</button>
             `:''}
             ${qualityMode==='import'?`
             <button class="btn btn-ghost btn-sm" onclick="qualityImportSaveScoreProgress()" title="保存加分进度为JSON">💾 保存进度</button>
@@ -619,17 +631,20 @@ async function qualityExport() {
 // ============================================================
 async function qualityManageMappings() {
     let mappings = {}, categories = []; try { [mappings,categories] = await Promise.all([eel.load_activity_mappings_json()(),eel.get_quality_categories()()]); } catch(e) {}
-    const entries = Object.entries(mappings).filter(([,info]) => info?.source === 'user');
+    const entries = Object.entries(mappings);
     const catOpts = categories.length ? categories : ['文体艺术类','学术竞赛类','学术成果类','学生工作类','社会实践荣誉类','比赛志愿服务类','学院活动参与类','寒暑假实践类','技能证书类','其他加分'];
     let rows = entries.map(([name, info]) => {
+        if (info?.source === 'official') {
+            return `<tr class="quality-official-preset-row"><td><strong>${escapeHtml(name)}</strong></td><td>${escapeHtml(info.category||'')}</td><td>${escapeHtml(info.default_grade||'')}</td><td>${Number(info.default_score||0)}</td><td><span class="quality-preset-source official">官方预设</span></td></tr>`;
+        }
         const safe = escapeHtml(name).replace(/[^a-zA-Z0-9一-鿿]/g,'_');
         return `<tr><td><input class="input" style="width:180px;font-size:11px;" value="${escapeHtml(name)}" data-old="${escapeHtml(name)}" id="qm-name-${safe}"></td>
             <td><select class="select-input" style="width:110px;font-size:11px;" id="qm-cat-${safe}">${catOpts.map(c => `<option value="${c}" ${info.category===c?'selected':''}>${c}</option>`).join('')}</select></td>
             <td><input class="input" style="width:80px;font-size:11px;" value="${escapeHtml(info.default_grade||'')}" id="qm-grade-${safe}"></td>
             <td><input class="input" type="number" style="width:60px;font-size:11px;" value="${info.default_score||0}" id="qm-score-${safe}"></td>
-            <td><button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="qualityDeleteMapping('${escapeHtml(name).replace(/'/g,"\\'")}')">删除</button></td></tr>`;
+            <td><span class="quality-preset-source user">我的项目</span><button class="btn btn-ghost btn-sm" style="color:var(--color-error);" onclick="qualityDeleteMapping('${escapeHtml(name).replace(/'/g,"\\'")}')">删除</button></td></tr>`;
     }).join('') || '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;">暂无保存的加分项目</td></tr>';
-    showModal('管理个人常用项目', `<p style="font-size:10px;color:var(--text-muted);margin-bottom:8px;">官方规则在“加分规则”中统一维护；这里只管理你保存的实际项目名称和常用设置。</p><div style="max-height:55vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>名称</th><th>类别</th><th>默认等级</th><th>默认分数</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    showModal('管理加分项预设', `<p style="font-size:10px;color:var(--text-muted);margin-bottom:8px;">官方规则继续保留并以只读方式显示；“我的项目”来自你原来保存的加分项，可继续修改和删除。</p><div style="max-height:55vh;overflow-y:auto;"><table class="data-table"><thead><tr><th>名称</th><th>类别</th><th>默认等级</th><th>默认分数</th><th>类型/操作</th></tr></thead><tbody>${rows}</tbody></table></div>
         <div style="margin-top:8px;padding:8px;background:var(--bg-tertiary);border-radius:var(--radius-sm);"><strong style="font-size:12px;">+ 添加新项目</strong>
         <div class="form-row" style="margin-top:4px;gap:8px;"><input id="qm-new-name" class="input" style="width:160px;font-size:11px;" placeholder="项目名称">
         <select id="qm-new-cat" class="select-input" style="width:110px;font-size:11px;">${catOpts.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
@@ -986,10 +1001,14 @@ function qualityImportRenderThresholdMini() {
 }
 
 async function qualityImportShowThresholds() {
+    // This entry can be clicked before the quality workspace finishes loading.
+    // Load on demand so existing presets never appear as an empty list.
+    if (!qualityThresholds.length) qualityThresholds = await qualityLoadThresholds();
     let allCats = ['文艺活动类','体育类','A类竞赛','B类竞赛','C类竞赛','D类竞赛','学术论文','非学术文章','专利软著','学生工作','荣誉称号','社会实践','技能培训','其他加分'];
     try { const cats = await eel.get_quality_categories()(); if (cats && cats.length) allCats = cats; } catch(e) {}
     let html = `<div style="max-height:50vh;overflow-y:auto;"><table class="data-table" style="font-size:11px;"><thead><tr><th>名称</th><th>上限</th><th>模式</th><th>适用类别</th><th></th></tr></thead><tbody>`;
     qualityThresholds.forEach((th, i) => { const isDefault = QUALITY_DEFAULT_THRESHOLD_NAMES.has(th.name), mode = th.mode || 'sum'; html += `<tr><td>${escapeHtml(th.name)}</td><td><input class="input" type="number" style="width:60px;font-size:11px;" value="${th.max}" onchange="qualityImportUpdateThreshold(${i},this.value)" step="1" min="0"></td><td style="font-size:10px;color:${mode==='max_item'?'var(--color-warning)':'var(--text-muted)'};">${mode==='max_item'?'🏆取最高':'Σ求和'}</td><td style="font-size:10px;">${escapeHtml((th.categories||[]).join(', '))}</td><td>${isDefault?'':`<button class="btn btn-ghost btn-sm" style="color:var(--color-error);font-size:10px;" onclick="qualityImportDeleteThreshold(${i})">删除</button>`}</td></tr>`; });
+    if (!qualityThresholds.length) html += '<tr><td colspan="5" style="padding:18px;text-align:center;color:var(--text-muted);">暂无上限预设，请检查本地数据后重试</td></tr>';
     html += `</tbody></table></div><div style="margin-top:8px;padding:8px;background:var(--bg-tertiary);border-radius:var(--radius-sm);"><strong style="font-size:11px;">+ 添加上限</strong><div style="display:flex;flex-direction:column;gap:6px;margin-top:4px;"><div style="display:flex;gap:6px;align-items:center;"><input id="mvth-new-name" class="input" style="width:120px;font-size:11px;" placeholder="名称"><input id="mvth-new-max" class="input" type="number" style="width:60px;font-size:11px;" value="30" step="1" min="0"><select id="mvth-new-mode" class="select-input" style="width:120px;font-size:10px;"><option value="sum">Σ 求和封顶</option><option value="max_item">🏆 取最高分</option></select><button class="btn btn-teal btn-sm" onclick="qualityImportConfirmAddThreshold()">添加</button></div><div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;"><span style="font-size:10px;">适用:</span>`;
     for (const cat of allCats) html += `<label style="font-size:10px;display:flex;align-items:center;gap:2px;"><input type="checkbox" value="${cat}" class="mvth-cat-cb"> ${cat}</label>`;
     html += `</div></div></div>`;
