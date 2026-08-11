@@ -6,7 +6,7 @@ on:
       version:
         description: "版本号（留空则使用 config.py）"
         required: false
-        default: "14.0.3"
+        default: "14.0.9"
   push:
     branches: [main, master, "macos-*"]
     tags: ["v*"]
@@ -47,8 +47,8 @@ jobs:
 
       - name: 下载并校验金山文档 CLI
         env:
-          KDOCS_CLI_VERSION: "2.5.14"
-          KDOCS_CLI_SHA256: "eff9ac66c208dbed3c5e06ea1aa49fa61c5d98b77f8349519af9b8637806b7a0"
+          KDOCS_CLI_VERSION: "2.6.0"
+          KDOCS_CLI_SHA256: "66f09cb187b0e929a8a6d1ce4c3e6cea347c80de75d615ed5d90269cdb70dbe2"
         run: |
           mkdir -p vendor .kdocs-download
           ARCHIVE="kdocs-cli-${KDOCS_CLI_VERSION}-darwin-arm64.tar.gz"

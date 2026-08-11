@@ -110,9 +110,15 @@ function renderCloudSyncList(specs, items, connected) {
         return `<article id="cloud-sync-${spec.id}" class="cloud-sync-item ${ready ? 'is-ready' : ''}">
             <div class="cloud-sync-state"><span></span><small>${cloudEscape(state)}</small></div>
             <div class="cloud-sync-copy"><strong>${cloudEscape(spec.label)}</strong><p>${cloudEscape(output ? (outputCount > 1 ? `待汇总 ${outputCount} 份德育结果` : cloudFileName(output)) : '本次尚未生成文件')}</p><small>${cloudEscape(sheetText)} · ${cloudFormatTime(item.updated_at)}</small>${item.success === false ? `<em title="${cloudEscape(item.error)}">${cloudEscape(item.error || '无法读取云表')}</em>` : ''}</div>
-            <div class="cloud-sync-actions">${item.bound && item.link_url ? `<button class="btn btn-ghost btn-sm" onclick="cloudOpen('${cloudEscape(item.link_url)}')">打开当前云表</button><button data-cloud-reorder-id="${spec.id}" class="btn btn-secondary btn-sm" onclick="CloudSync.reorder('${spec.id}')">整理顺序</button>` : ''}<button data-cloud-sync-id="${spec.id}" class="btn ${ready ? 'btn-primary' : 'btn-secondary'} btn-sm" ${action}>${output ? '选择目标并同步' : '去生成'}</button></div>
+            <div class="cloud-sync-actions">${item.bound && item.link_url ? `<button class="btn btn-ghost btn-sm" data-cloud-open-id="${spec.id}">打开当前云表</button><button data-cloud-reorder-id="${spec.id}" class="btn btn-secondary btn-sm" onclick="CloudSync.reorder('${spec.id}')">整理顺序</button>` : ''}<button data-cloud-sync-id="${spec.id}" class="btn ${ready ? 'btn-primary' : 'btn-secondary'} btn-sm" ${action}>${output ? '选择目标并同步' : '去生成'}</button></div>
         </article>`;
     }).join('');
+    target.querySelectorAll('[data-cloud-open-id]').forEach(button => {
+        button.addEventListener('click', () => {
+            const item = items[button.dataset.cloudOpenId] || {};
+            cloudOpen(item.link_url || '');
+        });
+    });
 }
 
 function renderCloudBindingEditor(specs, items, connected) {

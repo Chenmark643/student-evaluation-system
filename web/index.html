@@ -251,9 +251,9 @@
         </div>
     </div>
     <div id="update-overlay" class="modal-overlay hidden">
-        <div class="modal-card" style="max-width:500px;">
-            <div class="modal-header"><h3>🔄 软件更新</h3><button class="modal-close" onclick="document.getElementById('update-overlay').classList.add('hidden')">&times;</button></div>
-            <div id="update-body" style="padding:16px;"></div><div class="modal-footer" id="update-footer"></div>
+        <div class="modal-card kdocs-update-modal">
+            <div class="modal-header"><h3 id="update-title">云表格组件更新</h3><button id="update-close" class="modal-close" onclick="dismissKdocsComponentUpdate()">&times;</button></div>
+            <div id="update-body"></div><div class="modal-footer" id="update-footer"></div>
         </div>
     </div>
     <div id="onboarding-overlay" class="modal-overlay hidden">

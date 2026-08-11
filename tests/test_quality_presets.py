@@ -10,16 +10,19 @@ class QualityPresetTests(unittest.TestCase):
             'art-national-first': 6.0,
             'art-school-encouragement': 0.2,
             'sport-national-record': 10.0,
+            'sport-national-committee': 7.0,
             'contest-a-national-first': 14.0,
             'contest-b-college-encouragement': 0.2,
-            'paper-natural-top': 15.0,
             'patent-invention': 10.0,
+            'college-organization-优秀': 2.0,
             'volunteer-competition': 0.3,
             'college-activity-participation': 0.2,
         }
         for preset_id, score in expected.items():
             self.assertIn(preset_id, rows)
             self.assertEqual(rows[preset_id]['score'], score)
+        self.assertNotIn('paper-natural-top', rows)
+        self.assertFalse(any(row['id'].startswith('honor-') for row in rows.values()))
 
     def test_explicit_caps_are_complete_without_broad_social_cap(self):
         from backend.quality_presets import OFFICIAL_THRESHOLDS
@@ -69,7 +72,7 @@ class QualityPresetTests(unittest.TestCase):
 
         self.assertEqual(
             calculate_activity_score(0.3, count=3, contribution=0.9, related=True),
-            {'base_total': 0.9, 'contribution_total': 0.81, 'final': 1.62},
+            {'base_total': 0.9, 'contribution_total': 0.81, 'final': 0.81},
         )
         warning = validate_manual_score(2.5, score_range=(1, 2))
         self.assertTrue(warning['allowed'])

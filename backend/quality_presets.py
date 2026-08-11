@@ -13,6 +13,20 @@ OFFICIAL_THRESHOLDS = [
     {'name': '新生班主任助理取最高', 'max': 2.0, 'categories': ['班主任助理类'], 'mode': 'max_item'},
 ]
 
+PRIMARY_CATEGORIES = {
+    '文体艺术类': '文体艺术与身心发展',
+    '学术竞赛类': '学术科技与创新创业',
+    '学术成果类': '学术科技与创新创业',
+    '学生工作类': '学生工作与社团活动',
+    '班主任助理类': '学生工作与社团活动',
+    '社会实践荣誉类': '社会实践与志愿服务',
+    '比赛志愿服务类': '社会实践与志愿服务',
+    '学院活动参与类': '社会实践与志愿服务',
+    '寒暑假实践类': '社会实践与志愿服务',
+    '技能证书类': '技能培训',
+    '其他加分': '待学院认定',
+}
+
 LEGACY_FACTORY_MAPPINGS = {
     '英语四级': ('A类', '国家级', 5.0),
     '英语六级': ('A类', '国家级', 8.0),
@@ -34,17 +48,20 @@ def _slug(value: str) -> str:
 
 
 def preset(pid, name, category, grade, score, *, tags=(), note='', cap_group=None,
-           score_range=None, contribution_options=False):
+           score_range=None, contribution_options=False, contribution_policy='none'):
     return {
         'id': pid, 'name': name, 'category': category, 'grade': grade,
         'score': float(score), 'tags': list(tags), 'rule_note': note,
+        'primary_category': PRIMARY_CATEGORIES.get(category, category),
         'cap_group': cap_group,
         'score_range': list(score_range) if score_range else None,
-        'contribution_options': bool(contribution_options), 'source': 'official',
+        'contribution_options': bool(contribution_options),
+        'contribution_policy': contribution_policy if contribution_options else 'none',
+        'source': 'official',
     }
 
 
-def _matrix(rows, prefix, title, category, awards):
+def _matrix(rows, prefix, title, category, awards, *, contribution_policy='manual'):
     result = []
     for level, scores in rows.items():
         for award, score in zip(awards, scores):
@@ -54,6 +71,7 @@ def _matrix(rows, prefix, title, category, awards):
                 f'{prefix}-{_slug(level)}-{_slug(award)}', f'{title}·{level}·{award}',
                 category, f'{level}·{award}', score,
                 tags=(title, level, award), contribution_options=True,
+                contribution_policy=contribution_policy,
                 note='同一项目多次获奖取最高值，不重复计分。',
             ))
     return result
@@ -68,7 +86,14 @@ def build_official_presets():
     }
     rows += _matrix(art, 'art', '文艺活动', '文体艺术类', ['一等奖', '二等奖', '三等奖', '优秀（鼓励）奖'])
     for level, scores in art.items():
-        rows.append(preset(f'art-{_slug(level)}-special', f'文艺活动·{level}·特等奖', '文体艺术类', f'{level}·特等奖', scores[0] + 1, tags=('文艺', level, '特等奖')))
+        rows.append(preset(f'art-{_slug(level)}-special', f'文艺活动·{level}·特等奖', '文体艺术类', f'{level}·特等奖', scores[0] + 1, tags=('文艺', level, '特等奖'), contribution_options=True, contribution_policy='manual'))
+        rows.append(preset(
+            f'art-{_slug(level)}-committee', f'文艺活动·{level}·其他组委会奖',
+            '文体艺术类', f'{level}·按二等奖', scores[1],
+            tags=('文艺', level, '最佳台风奖', '最佳组合奖', '最佳剧本奖', '突出贡献奖'),
+            note='组委会颁发的其他奖项按相应级别二等奖加分。',
+            contribution_options=True, contribution_policy='manual',
+        ))
 
     sport = {
         '全国': [10, 8, 7, 6, 5, 4.5, 4, 3.5, 3],
@@ -80,7 +105,20 @@ def build_official_presets():
     for level, scores in sport.items():
         for rank, score in zip(ranks, scores):
             rid = 'record' if rank == '破纪录' else str(ranks.index(rank))
-            rows.append(preset(f'sport-{_slug(level)}-{rid}', f'体育活动·{level}·{rank}', '文体艺术类', f'{level}·{rank}', score, tags=('体育', level, rank), contribution_options=True))
+            rows.append(preset(
+                f'sport-{_slug(level)}-{rid}', f'体育活动·{level}·{rank}',
+                '文体艺术类', f'{level}·{rank}', score,
+                tags=('体育', level, rank), contribution_options=True,
+                contribution_policy='manual',
+                note='团体项目主力按本级别加分；替补队员须改选降一等级后的规则。',
+            ))
+        rows.append(preset(
+            f'sport-{_slug(level)}-committee', f'体育活动·{level}·其他组委会奖',
+            '文体艺术类', f'{level}·按二等奖', scores[2],
+            tags=('体育', level, 'MVP', '最佳射手'),
+            note='MVP、最佳射手等其他组委会奖按相应级别二等奖加分。',
+            contribution_options=True, contribution_policy='manual',
+        ))
     rows.extend([
         preset('performance-training', '啦啦操/表演方队训练', '文体艺术类', '积极训练', 1),
         preset('performance-show', '节目演出/表演人员', '文体艺术类', '参加演出', .5),
@@ -93,22 +131,25 @@ def build_official_presets():
         'd': ('D类竞赛', {'国家级': [2.5,2,1.8,1.5], '省部级': [1.5,1.2,1,.8], '校级': [None,.8,.6,.4]}),
     }
     for code, (title, matrix) in contests.items():
-        rows += _matrix(matrix, f'contest-{code}', title, '学术竞赛类', ['特等奖','一等奖','二等奖','三等奖'])
-    rows.append(preset('contest-b-college-encouragement', 'B类竞赛·学院·优秀奖', '学术竞赛类', '学院·优秀奖', .2, tags=('B类竞赛','学院','优秀奖'), contribution_options=True))
+        rows += _matrix(
+            matrix, f'contest-{code}', title, '学术竞赛类',
+            ['特等奖','一等奖','二等奖','三等奖'],
+            contribution_policy='academic_90',
+        )
+    rows.append(preset('contest-b-college-encouragement', 'B类竞赛·学院·优秀奖', '学术竞赛类', '学院·优秀奖', .2, tags=('B类竞赛','学院','优秀奖'), contribution_options=True, contribution_policy='academic_90'))
     for award, score in [('一等奖', .8), ('二等奖', .6), ('三等奖', .4)]:
-        rows.append(preset(f'contest-other-school-{_slug(award)}', f'其他竞赛·校级·{award}', '学术竞赛类', f'校级·{award}', score, contribution_options=True))
-
-    for kind, values in {
-        'natural': ('自然科学论文', [('顶尖期刊',15),('顶级期刊',10),('A类',7),('B类',5),('C类',3),('D类',1.5),('E类',1),('其他期刊',.8)]),
-        'humanities': ('人文社科论文', [('顶级期刊',13),('A类',7),('B类',5),('C类',3),('D类',1.5),('E类',1),('其他期刊',.8)]),
-    }.items():
-        title, levels = values
-        for grade, score in levels:
-            rows.append(preset(f'paper-{kind}-{_slug(grade)}', f'{title}·{grade}', '学术成果类', grade, score, tags=('论文', title, grade), contribution_options=True))
+        rows.append(preset(
+            f'contest-other-school-{_slug(award)}', f'其他竞赛·校级·{award}',
+            '学术竞赛类', f'校级·{award}', score, contribution_options=True,
+            contribution_policy='academic_90',
+        ))
     for level, score in [('国家级',5),('省级',3),('校级',1),('系级',.5)]:
         rows.append(preset(f'article-{_slug(level)}', f'非学术文章·{level}', '学术成果类', level, score))
     for pid, name, score in [('invention','发明专利',10),('utility','实用新型专利',4),('design','外观设计专利',2),('software','软件著作权',1)]:
-        rows.append(preset(f'patent-{pid}', name, '学术成果类', '每项', score, contribution_options=True))
+        rows.append(preset(
+            f'patent-{pid}', name, '学术成果类', '每项', score,
+            contribution_options=True, contribution_policy='academic_90',
+        ))
     rows.extend([
         preset('entrepreneurship', '创业活动获肯定性评价', '学术成果类', '学院认定', 3, score_range=(3,5)),
         preset('international-conference', '参加国际学术会议', '学术成果类', '学院认定', 2, score_range=(2,5)),
@@ -121,8 +162,11 @@ def build_official_presets():
         rows.append(preset(f'class-assistant-{_slug(grade)}', f'新生班主任助理·{grade}', '班主任助理类', grade, score, cap_group='新生班主任助理取最高', note='可与学生干部考核叠加。'))
     for grade, score in [('优秀',2),('良好',1),('合格',0)]:
         rows.append(preset(f'club-{_slug(grade)}', f'社团等组织考核·{grade}', '学生工作类', grade, score, cap_group='学生干部任职取最高'))
-    for level, score in [('国家级',6),('省级',4),('市级',2),('校级',1),('院级',.5)]:
-        rows.append(preset(f'honor-{_slug(level)}', f'其他荣誉称号·{level}', '文体艺术类', level, score))
+    for grade, score in [('优秀',2),('良好',1)]:
+        rows.append(preset(
+            f'college-organization-{_slug(grade)}', f'院级组织考评·{grade}',
+            '学生工作类', grade, score, cap_group='学生干部任职取最高',
+        ))
 
     for grade, score in [('优秀',2),('良好',1),('合格及以下',0)]:
         rows.append(preset(f'practice-assessment-{_slug(grade)}', f'社会实践考核·{grade}', '社会实践荣誉类', grade, score))
@@ -191,13 +235,19 @@ def extract_user_mappings(mappings):
 
 
 def calculate_activity_score(base_score, count=1, contribution=1.0, related=False):
+    """Calculate a new activity score.
+
+    ``related`` remains in the signature for older desktop clients, but the
+    supplied official rules contain no major/Russian-language multiplier and
+    therefore it no longer changes newly calculated scores.
+    """
     count = max(1, int(count or 1))
     base_total = round(float(base_score or 0) * count, 4)
     contribution_total = round(base_total * float(contribution or 0), 4)
     return {
         'base_total': base_total,
         'contribution_total': contribution_total,
-        'final': round(contribution_total * (2 if related else 1), 4),
+        'final': contribution_total,
     }
 
 

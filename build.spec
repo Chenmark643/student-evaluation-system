@@ -21,7 +21,9 @@ app_datas = [
     (os.path.join('web', 'js', 'emoji-replace.js'), os.path.join('web', 'js')),
 ]
 
-kdocs_cli = Path(os.environ.get('LOCALAPPDATA', '')) / 'kdocs-cli' / 'kdocs-cli.exe'
+vendor_cli = Path('vendor') / 'kdocs-cli.exe'
+installed_cli = Path(os.environ.get('LOCALAPPDATA', '')) / 'kdocs-cli' / 'kdocs-cli.exe'
+kdocs_cli = vendor_cli if vendor_cli.is_file() else installed_cli
 app_binaries = [(str(kdocs_cli), '.')] if kdocs_cli.is_file() else []
 
 a = Analysis(
@@ -45,6 +47,7 @@ a = Analysis(
         'xlrd',
         'backend',
         'backend.bridge',
+        'backend.app_update',
         'backend.module_a_gpa',
         'backend.module_b_moral',
         'backend.module_c_quality',

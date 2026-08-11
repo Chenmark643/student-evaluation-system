@@ -23,6 +23,9 @@ let moralWorkspaceMode = 'continue';
 let moralExistingSource = {path: '', mappings: {}, analysis: null};
 let moralVnextItems = [];
 let moralFreshItems = [];
+// null means an older saved session has not made an explicit project choice yet.
+// Projects that already contain data are selected automatically in that case.
+let moralSelectedTemplateProjects = null;
 let moralVnextOverrides = {};
 
 const MORAL_PROJECT_TEMPLATES = [
@@ -243,16 +246,16 @@ function moralItemStatusMarkup(item, mode) {
 
 function moralRefreshReadySummary(mode) {
     const fresh = mode === 'fresh';
-    const items = fresh ? moralFreshItems : moralVnextItems;
+    const items = fresh ? moralFreshConfiguredItems() : moralVnextItems;
     const sources = items.reduce((sum,item) => sum + (item.sources || []).length, 0);
     const mapped = items.reduce((sum,item) => sum + (item.sources || []).filter(moralSourceIsMapped).length, 0);
-    const templateProjects = fresh ? new Set(items.filter(item => item.standard_template).map(item => item.template_project)).size : 0;
+    const templateProjects = fresh ? moralSelectedTemplateKeys().length : 0;
     const visibleItemCount = fresh ? templateProjects + items.filter(item => !item.standard_template).length : items.length;
     const min = document.getElementById(fresh ? 'moral-fresh-min' : 'moral-vnext-min')?.value ?? 0;
     const max = document.getElementById(fresh ? 'moral-fresh-max' : 'moral-vnext-max')?.value ?? 115;
     const target = document.getElementById(fresh ? 'moral-fresh-ready-summary' : 'moral-vnext-ready-summary');
     if (!target) return;
-    target.innerHTML = `<div><small>当前专业</small><b>${escapeHtml(MajorScope.get() || '尚未设置')}</b></div><div><small>计分项目</small><b>${visibleItemCount}项</b></div><div><small>材料映射</small><b>${mapped}/${sources}</b></div><div><small>分数范围</small><b>${escapeHtml(min)}～${escapeHtml(max)}</b></div><p>点击生成后，系统会先审查姓名、专业和映射问题，不会直接写出错误结果。</p>`;
+    target.innerHTML = `<div><small>当前专业</small><b>${escapeHtml(MajorScope.get() || '尚未设置')}</b></div><div><small>本次计分项目</small><b>${visibleItemCount}项</b></div><div><small>材料映射</small><b>${mapped}/${sources}</b></div><div><small>分数范围</small><b>${escapeHtml(min)}～${escapeHtml(max)}</b></div><p>${fresh && !visibleItemCount ? '当前未选择计分项目，将按基础分生成；可返回上方勾选需要的项目。' : '点击生成后，系统会先审查已选项目的姓名、专业和映射问题，不会校验未选择的项目。'}</p>`;
 }
 
 function moralRenderVnextItems() {
@@ -303,10 +306,58 @@ function moralTemplateFiles(projectKey) {
     return item?.sources || [];
 }
 
+function moralSelectedTemplateKeys() {
+    if (!Array.isArray(moralSelectedTemplateProjects)) {
+        moralSelectedTemplateProjects = [...new Set(moralFreshItems
+            .filter(item => item.standard_template && (
+                (item.sources || []).length || Object.keys(item.manual_values || {}).length
+            ))
+            .map(item => item.template_project)
+            .filter(Boolean))];
+    }
+    return moralSelectedTemplateProjects;
+}
+
+function moralTemplateProjectSelected(projectKey) {
+    return moralSelectedTemplateKeys().includes(projectKey);
+}
+
+function moralFreshConfiguredItems() {
+    const selected = new Set(moralSelectedTemplateKeys());
+    return moralFreshItems.filter(item => !item.standard_template || selected.has(item.template_project));
+}
+
+function moralSetTemplateProjectSelected(projectKey, selected, options={}) {
+    const project = MORAL_PROJECT_TEMPLATES.find(entry => entry.key === projectKey);
+    if (!project) return;
+    const keys = new Set(moralSelectedTemplateKeys());
+    selected ? keys.add(projectKey) : keys.delete(projectKey);
+    moralSelectedTemplateProjects = [...keys];
+    moralRenderFreshItems();
+    saveAllToMemory();
+    if (!options.silent) {
+        const hasSavedData = moralFreshItems.some(item => item.standard_template && item.template_project === projectKey && (
+            (item.sources || []).length || Object.keys(item.manual_values || {}).length
+        ));
+        const message = selected
+            ? `已选择“${project.name}”，请上传材料或批量录入`
+            : `已取消“${project.name}”${hasSavedData ? '，已有数据会保留，但不参与本次导出' : '，不会影响导出'}`;
+        showToast(message, selected ? 'success' : 'info');
+    }
+}
+
+function moralSelectAllTemplateProjects(selected) {
+    moralSelectedTemplateProjects = selected ? MORAL_PROJECT_TEMPLATES.map(project => project.key) : [];
+    moralRenderFreshItems();
+    saveAllToMemory();
+    showToast(selected ? '已选择全部标准项目' : '已清空标准项目选择；已有数据仍会保留', 'info');
+}
+
 function moralRenderTemplateProjects() {
     const container = document.getElementById('moral-template-projects');
     if (!container) return;
     container.innerHTML = MORAL_PROJECT_TEMPLATES.map(project => {
+        const selected = moralTemplateProjectSelected(project.key);
         const files = moralTemplateFiles(project.key);
         const addItem = moralTemplateItem(project.key, 'add');
         const deductItem = moralTemplateItem(project.key, 'deduct');
@@ -314,25 +365,27 @@ function moralRenderTemplateProjects() {
         const manualDeduct = Object.keys(deductItem?.manual_values || {}).length;
         const rowCount = files.reduce((sum,source) => sum + Number(source.template_meta?.row_count || 0), 0);
         const duplicateCount = files.reduce((sum,source) => sum + Number(source.template_meta?.duplicate_count || 0), 0);
-        const state = files.length ? 'ready' : (manualAdd + manualDeduct ? 'manual' : 'empty');
-        const status = files.length
+        const state = !selected ? 'inactive' : (files.length ? 'ready' : (manualAdd + manualDeduct ? 'manual' : 'pending'));
+        const status = !selected ? '本次不计入；需要时勾选即可' : (files.length
             ? `${files.length}个文件 · ${rowCount}条记录${duplicateCount ? ` · ${duplicateCount}条自动累计` : ''}`
-            : (manualAdd + manualDeduct ? `已批量录入 ${manualAdd + manualDeduct} 人` : '等待填写或批量录入');
+            : (manualAdd + manualDeduct ? `已批量录入 ${manualAdd + manualDeduct} 人` : '已选择，等待上传材料或批量录入'));
         const fileTags = files.map((source,index) => `<span title="${escapeHtml(source.path)}">
             ${escapeHtml(source.path.split(/[\\/]/).pop())}
             <button title="移除该文件" onclick="moralRemoveTemplateFile('${project.key}',${index})">×</button>
         </span>`).join('');
         return `<article class="moral-template-card ${state}">
-            <div class="moral-template-card-head"><span>${project.name.slice(0,1)}</span><div><strong>${escapeHtml(project.name)}</strong><small>${project.code}</small></div><em>${files.length ? '已识别' : (manualAdd + manualDeduct ? '已录入' : '未导入')}</em></div>
+            <div class="moral-template-card-head"><label class="moral-template-check" title="${selected ? '取消后不参与本次计分，已有数据仍保留' : '选择后才会参与本次计分'}"><input type="checkbox" ${selected ? 'checked' : ''} onchange="moralSetTemplateProjectSelected('${project.key}',this.checked)"><span>✓</span></label><span>${project.name.slice(0,1)}</span><div><strong>${escapeHtml(project.name)}</strong><small>${project.code}</small></div><em>${!selected ? '未选择' : (files.length ? '已识别' : (manualAdd + manualDeduct ? '已录入' : '待材料'))}</em></div>
             <p>${escapeHtml(status)}</p>
             ${fileTags ? `<div class="moral-template-files">${fileTags}</div>` : ''}
             <div class="moral-template-actions">
-                <button class="btn btn-ghost btn-sm" onclick="moralDownloadProjectTemplate('${project.key}')">下载模板</button>
-                <button class="btn btn-secondary btn-sm" onclick="moralOpenTemplateBatch('${project.key}','add')">批量加分</button>
-                <button class="btn btn-secondary btn-sm" onclick="moralOpenTemplateBatch('${project.key}','deduct')">批量扣分</button>
+                <button class="btn btn-ghost btn-sm" ${selected ? '' : 'disabled'} onclick="moralDownloadProjectTemplate('${project.key}')">下载模板</button>
+                <button class="btn btn-secondary btn-sm" ${selected ? '' : 'disabled'} onclick="moralOpenTemplateBatch('${project.key}','add')">批量加分</button>
+                <button class="btn btn-secondary btn-sm" ${selected ? '' : 'disabled'} onclick="moralOpenTemplateBatch('${project.key}','deduct')">批量扣分</button>
             </div>
         </article>`;
     }).join('');
+    const count = document.getElementById('moral-template-selected-count');
+    if (count) count.textContent = `已选 ${moralSelectedTemplateKeys().length} / ${MORAL_PROJECT_TEMPLATES.length}`;
 }
 
 async function moralImportProjectTemplates() {
@@ -347,6 +400,9 @@ async function moralImportProjectTemplates() {
             if (!file.success) continue;
             const project = MORAL_PROJECT_TEMPLATES.find(entry => entry.key === file.project_key);
             if (!project) continue;
+            const selected = new Set(moralSelectedTemplateKeys());
+            selected.add(project.key);
+            moralSelectedTemplateProjects = [...selected];
             const addItem = moralEnsureTemplateItem(project, 'add');
             const deductItem = moralEnsureTemplateItem(project, 'deduct');
             if (addItem.sources.some(source => source.path === file.path)) continue;
@@ -483,10 +539,11 @@ function moralRemoveFreshItem(itemId) {
 
 async function moralRunFresh() {
     if (!MajorScope.requireForExport()) return;
+    const configuredItems = moralFreshConfiguredItems();
     const config = {
         mode:'fresh', roster_path:document.getElementById('moral-roster-file')?.value?.trim() || '',
         major_filter:MajorScope.get(),
-        items:moralFreshItems,
+        items:configuredItems,
         scoring:{
             base:Number(document.getElementById('moral-fresh-base')?.value ?? 80),
             min:Number(document.getElementById('moral-fresh-min')?.value ?? 0),
@@ -495,7 +552,17 @@ async function moralRunFresh() {
         output_dir:document.getElementById('moral-output-dir')?.value?.trim() || '',
     };
     if (!config.roster_path) { showToast('请先选择花名册文件', 'warning'); return; }
-    if (!config.items.length || config.items.some(item => {
+    const missingSelectedProjects = moralSelectedTemplateKeys().filter(projectKey => !configuredItems.some(item =>
+        item.standard_template && item.template_project === projectKey && (
+            (item.sources || []).length || Object.keys(item.manual_values || {}).length
+        )
+    ));
+    if (missingSelectedProjects.length) {
+        const names = MORAL_PROJECT_TEMPLATES.filter(project => missingSelectedProjects.includes(project.key)).map(project => project.name);
+        showToast(`已选项目尚未录入：${names.join('、')}。请补充材料，或取消勾选后再导出`, 'warning');
+        return;
+    }
+    if (config.items.some(item => {
         const sources = item.sources || [];
         const hasManual = Object.keys(item.manual_values || {}).length > 0;
         return (!sources.length && !hasManual) || sources.some(source => !moralSourceIsMapped(source));
@@ -862,8 +929,8 @@ async function renderModuleMoral() {
         <div class="module-section moral-vnext-section">
             <div class="moral-section-heading"><span class="step-badge">2</span><div><h2>按项目收集德育材料</h2><p>每个项目一份固定模板；可一次选择多个文件，系统自动识别项目、加分列和扣分列。</p></div></div>
             <div class="moral-template-toolbar">
-                <div><strong>标准模板中心</strong><small>干事只需粘贴班级、姓名，再在后两列填写正数</small></div>
-                <div><button class="btn btn-ghost btn-sm" onclick="moralDownloadProjectTemplate('all')">下载全部模板</button><button class="btn btn-primary btn-sm" onclick="moralImportProjectTemplates()">批量导入已填模板</button></div>
+                <div><strong>标准模板中心 · 选择本次需要的项目 <span id="moral-template-selected-count">已选 0 / 10</span></strong><small>只校验已勾选项目；未选项目不计分，也不会阻止导出</small></div>
+                <div><button class="btn btn-ghost btn-sm" onclick="moralSelectAllTemplateProjects(true)">全选</button><button class="btn btn-ghost btn-sm" onclick="moralSelectAllTemplateProjects(false)">清空</button><button class="btn btn-primary btn-sm" onclick="moralImportProjectTemplates()">批量导入已填模板</button></div>
             </div>
             <div id="moral-template-projects" class="moral-template-grid"></div>
             <details class="moral-advanced-config moral-custom-project"><summary><span><b>其他项目与不规则材料</b><small>仅在10个预留项目之外使用，仍可自定义映射</small></span><em>展开</em></summary><div class="moral-advanced-body"><div class="moral-item-composer">
@@ -1538,6 +1605,7 @@ function resetModuleMoral() {
     moralSelectedColumns = null;
     moralExportGradeFilter = 'all';
     moralFreshItems = [];
+    moralSelectedTemplateProjects = [];
     moralVnextItems = [];
     moralExistingSource = {path:'', mappings:{}, analysis:null};
     ['moral-roster-file','moral-output-dir'].forEach(id => {

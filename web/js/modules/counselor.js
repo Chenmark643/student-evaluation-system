@@ -846,10 +846,14 @@ function cRenderSettings(){
         <div class="module-section"><h3>💾 数据备份</h3><button class="btn btn-teal btn-sm" onclick="cBackupData()">📥 导出备份</button></div>
         <div class="module-section"><h3>📥 数据恢复</h3><button class="btn btn-secondary btn-sm" onclick="cRestoreData()">📤 恢复备份</button></div>
         <div class="module-section"><h3>📈 导出工具</h3><div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-teal btn-sm" onclick="cExportAllCurrent()">📋 导出当前数据(${cData.length}条)</button><button class="btn btn-ghost btn-sm" onclick="cExportCompareReport()">📥 导出学期对比报告</button></div></div>
-        <div class="module-section"><h3>🔄 软件更新</h3>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">拿到新版exe后，在这里选择文件即可一键更新，无需卸载重装。</p>
-            <button class="btn btn-teal btn-sm" onclick="checkForUpdates()">📂 选择更新文件</button>
-            <span style="font-size:10px;color:var(--text-muted);margin-left:8px;">当前版本: v${typeof APP_VERSION!=='undefined'?APP_VERSION:'8.0'}</span></div>
+        <div class="module-section app-settings-update"><h3>程序在线更新</h3>
+            <p>启动时自动检查，只下载新版主程序并在校验后重启，不需要重新安装完整环境。</p>
+            <div class="app-settings-update-row"><span>当前版本：v${typeof APP_VERSION!=='undefined'?APP_VERSION:'8.0'}</span><div><button class="btn btn-primary btn-sm" onclick="checkOnlineApplicationUpdate(true)">检查在线更新</button><button class="btn btn-ghost btn-sm" onclick="checkForUpdates()">选择本地 EXE</button></div></div>
+        </div>
+        <div class="module-section kdocs-settings-update"><h3>云表格连接组件</h3>
+            <p>启动时自动检测官方版本，发现新版后由你确认安装，不会改动学生数据或云端表格。</p>
+            <div class="kdocs-settings-update-row"><span id="kdocs-settings-version">${kdocsComponentVersionLabel()}</span><button class="btn btn-secondary btn-sm" onclick="manualCheckKdocsComponentUpdate()">检查组件更新</button></div>
+        </div>
         <div class="module-section"><h3>🌓 外观</h3><p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">当前：${document.documentElement.getAttribute('data-theme')==='light'?'浅色模式':'深色模式'}</p><button class="btn btn-secondary btn-sm" onclick="toggleThemeManual()">切换深浅色</button></div>
         <div class="module-section"><h3>ℹ️ 关于</h3><div style="font-size:12px;color:var(--text-secondary);line-height:2;"><p><strong>学生综合测评系统</strong> V8.0</p><p>开发者：陈雨昂</p><p>所属：顿河学院团委秘书处</p><p>辅导员工作台 — 全功能数据看板</p><hr style="border-color:var(--border-thin);margin:8px 0;"><p style="font-size:10px;color:var(--text-muted);">当前身份：${sessionStorage.getItem('eval_user')||'辅导员'}</p></div></div>`;
     cRenderExtraSemesterList();

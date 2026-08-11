@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -47,6 +48,7 @@ PROGRAM_ORDER_INDEX = {
     normalize_program_name(name): index for index, name in enumerate(PROGRAM_ORDER)
 }
 REORDER_RETRY_DELAYS = (2, 4)
+CLI_UPDATE_CHECK_TTL_SECONDS = 15 * 60
 
 
 class KdocsSyncError(RuntimeError):
@@ -56,6 +58,9 @@ class KdocsSyncError(RuntimeError):
 
 
 _SYNC_LOCK = threading.Lock()
+_CLI_CACHE_LOCK = threading.Lock()
+_CLI_PATH_CACHE: str | None = None
+_CLI_UPDATE_CACHE: tuple[float, dict] | None = None
 ProgressCallback = Callable[..., None]
 
 
@@ -82,40 +87,204 @@ def _subprocess_window_options() -> dict:
     return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
 
 
-def _find_cli() -> str:
-    # Prefer the version shipped with the desktop application. Finder-launched
-    # macOS apps do not inherit the user's interactive-shell PATH, so relying on
-    # shutil.which() alone makes an otherwise installed CLI invisible.
+def _version_tuple(value: str) -> tuple[int, ...]:
+    match = re.search(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?!\d)", str(value or ""))
+    return tuple(int(part) for part in match.groups()) if match else ()
+
+
+def _cli_version(path: str) -> str:
+    try:
+        completed = subprocess.run(
+            [path, "version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            check=False,
+            **_subprocess_window_options(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    combined = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+    match = re.search(r"(?<!\d)(\d+\.\d+\.\d+)(?!\d)", combined)
+    return match.group(1) if match else ""
+
+
+def _cli_candidates() -> list[tuple[str, bool]]:
+    """Return unique CLI paths as ``(path, bundled)`` candidates."""
+    candidates: list[tuple[str, bool]] = []
+
+    def add(candidate: Path | str | None, bundled: bool = False) -> None:
+        if not candidate:
+            return
+        path = Path(candidate)
+        if not path.is_file():
+            return
+        resolved = str(path.resolve())
+        if not any(existing == resolved for existing, _ in candidates):
+            candidates.append((resolved, bundled))
+
+    # User-level installations are writable and survive application upgrades.
+    # Prefer them over an equally new frozen bundle so the built-in updater can
+    # keep the cloud connector current without replacing the whole application.
+    add(shutil.which("kdocs-cli"))
+    if sys.platform == "darwin":
+        add(Path.home() / ".local" / "bin" / "kdocs-cli")
+    elif os.name == "nt":
+        add(Path(os.environ.get("LOCALAPPDATA", Path.home())) / "kdocs-cli" / "kdocs-cli.exe")
+    else:
+        add(Path.home() / ".local" / "bin" / "kdocs-cli")
+
     if getattr(sys, "frozen", False):
         bundle_dir = Path(getattr(sys, "_MEIPASS", ""))
-        # Checking both names also keeps mixed development/build environments
-        # predictable when tests inspect a bundle from another platform.
         for bundled_name in ("kdocs-cli", "kdocs-cli.exe"):
-            bundled = bundle_dir / bundled_name
-            if bundled.is_file():
-                return str(bundled)
+            add(bundle_dir / bundled_name, bundled=True)
+    return candidates
 
-    found = shutil.which("kdocs-cli")
-    if found:
-        return found
 
-    if sys.platform == "darwin":
-        # Standard location used by the official Kdocs macOS installer. Check
-        # it directly because Finder apps normally have a minimal PATH.
-        candidate = Path.home() / ".local" / "bin" / "kdocs-cli"
-        if candidate.is_file():
-            return str(candidate)
-    elif os.name == "nt":
-        candidate = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "kdocs-cli" / "kdocs-cli.exe"
-        if candidate.is_file():
-            return str(candidate)
+def _invalidate_cli_cache() -> None:
+    global _CLI_PATH_CACHE, _CLI_UPDATE_CACHE
+    with _CLI_CACHE_LOCK:
+        _CLI_PATH_CACHE = None
+        _CLI_UPDATE_CACHE = None
+
+
+def _find_cli() -> str:
+    global _CLI_PATH_CACHE
+    with _CLI_CACHE_LOCK:
+        if _CLI_PATH_CACHE and Path(_CLI_PATH_CACHE).is_file():
+            return _CLI_PATH_CACHE
+
+        candidates = _cli_candidates()
+        if not candidates:
+            raise KdocsSyncError("未找到 kdocs-cli，请先安装或重新启动软件后再试。")
+
+        ranked = []
+        for index, (candidate, bundled) in enumerate(candidates):
+            version = _version_tuple(_cli_version(candidate))
+            ranked.append((version, 0 if bundled else 1, -index, candidate))
+        _CLI_PATH_CACHE = max(ranked)[-1]
+        return _CLI_PATH_CACHE
+
+
+def _updatable_cli_path(cli_path: str) -> str:
+    """Move a bundled CLI to persistent user storage before self-upgrading it."""
+    if not getattr(sys, "frozen", False):
+        return cli_path
+    bundle_dir = Path(getattr(sys, "_MEIPASS", ""))
+    source = Path(cli_path)
+    if source.parent != bundle_dir:
+        return cli_path
+
+    if os.name == "nt":
+        target = Path(os.environ.get("LOCALAPPDATA", APP_DIR)) / "kdocs-cli" / "kdocs-cli.exe"
     else:
-        # Standard location used by the official Kdocs Linux installer.
-        candidate = Path.home() / ".local" / "bin" / "kdocs-cli"
-        if candidate.is_file():
-            return str(candidate)
+        target = Path.home() / ".local" / "bin" / "kdocs-cli"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    if os.name != "nt":
+        target.chmod(target.stat().st_mode | 0o755)
+    _invalidate_cli_cache()
+    return str(target)
 
-    raise KdocsSyncError("未找到 kdocs-cli，请先安装或重新启动软件后再试。")
+
+def get_cli_version_status(force: bool = False) -> dict:
+    """Check the installed and latest Kdocs CLI versions without blocking startup."""
+    global _CLI_UPDATE_CACHE
+    now = time.monotonic()
+    with _CLI_CACHE_LOCK:
+        if not force and _CLI_UPDATE_CACHE and now - _CLI_UPDATE_CACHE[0] < CLI_UPDATE_CHECK_TTL_SECONDS:
+            return dict(_CLI_UPDATE_CACHE[1])
+
+    try:
+        cli_path = _find_cli()
+        current_version = _cli_version(cli_path)
+        completed = subprocess.run(
+            [cli_path, "upgrade", "--check"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=25,
+            check=False,
+            **_subprocess_window_options(),
+        )
+        if completed.returncode != 0:
+            raise KdocsSyncError((completed.stderr or "无法连接更新服务，请稍后重试。").strip())
+        output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+        current_match = re.search(r"Current version:\s*v?(\d+\.\d+\.\d+)", output, re.I)
+        latest_match = re.search(r"Latest version:\s*v?(\d+\.\d+\.\d+)", output, re.I)
+        current_version = current_match.group(1) if current_match else current_version
+        latest_version = latest_match.group(1) if latest_match else current_version
+        status = {
+            "success": True,
+            "current_version": current_version,
+            "latest_version": latest_version,
+            "update_available": bool(
+                _version_tuple(latest_version) > _version_tuple(current_version)
+            ),
+            "using_bundled": bool(
+                getattr(sys, "frozen", False)
+                and Path(cli_path).parent == Path(getattr(sys, "_MEIPASS", ""))
+            ),
+        }
+    except (KdocsSyncError, OSError, ValueError) as exc:
+        status = {
+            "success": False,
+            "current_version": "",
+            "latest_version": "",
+            "update_available": False,
+            "error": str(exc),
+        }
+
+    with _CLI_CACHE_LOCK:
+        _CLI_UPDATE_CACHE = (now, dict(status))
+    return status
+
+
+def upgrade_cli() -> dict:
+    """Install the latest user-level cloud connector after explicit confirmation."""
+    if not _SYNC_LOCK.acquire(blocking=False):
+        return {"success": False, "busy": True, "error": "云表正在同步，请等待完成后再更新组件。"}
+    try:
+        before = get_cli_version_status(force=True)
+        if before.get("success") and not before.get("update_available"):
+            return {**before, "success": True, "updated": False, "message": "当前已是最新版本。"}
+
+        cli_path = _updatable_cli_path(_find_cli())
+        completed = subprocess.run(
+            [cli_path, "upgrade", "-y"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            check=False,
+            **_subprocess_window_options(),
+        )
+        if completed.returncode != 0:
+            raise KdocsSyncError((completed.stderr or "云表格组件更新失败。").strip())
+
+        target_version = str(before.get("latest_version") or "")
+        previous_version = str(before.get("current_version") or "")
+        _invalidate_cli_cache()
+        selected_path = _find_cli()
+        installed_version = _cli_version(selected_path)
+        if target_version and _version_tuple(installed_version) < _version_tuple(target_version):
+            raise KdocsSyncError("新版组件已下载，但当前程序仍在使用旧版。请重启程序后再次检查。")
+        return {
+            "success": True,
+            "updated": installed_version != previous_version,
+            "current_version": installed_version,
+            "latest_version": target_version or installed_version,
+            "update_available": False,
+            "message": "云表格组件已更新，可以继续使用。",
+        }
+    except (KdocsSyncError, OSError, ValueError) as exc:
+        return {"success": False, "error": str(exc)}
+    finally:
+        _SYNC_LOCK.release()
 
 
 def _json_from_output(output: str) -> Any:
@@ -357,11 +526,10 @@ def bind_workbook(cloud_key: str, link_url: str) -> dict:
     try:
         if not cloud_key or len(cloud_key) > 80:
             raise KdocsSyncError("云表标识无效。")
-        if not isinstance(link_url, str) or not link_url.strip().lower().startswith(("http://", "https://")):
-            raise KdocsSyncError("请输入有效的金山文档链接。")
+        link_url = _validated_kdocs_link(link_url)
         if not auth_status().get("authenticated"):
             return {"success": False, "needs_login": True, "error": "请先连接金山文档账号。"}
-        resolved = _api("drive", "read-file", {"url": link_url.strip()}, timeout=180)
+        resolved = _api("drive", "read-file", {"url": link_url}, timeout=180)
         file_id = _extract_file_id(resolved)
         if not file_id:
             raise KdocsSyncError("无法从该链接识别云表格，请确认当前账号具有访问权限。")
@@ -369,7 +537,7 @@ def bind_workbook(cloud_key: str, link_url: str) -> dict:
         if not isinstance(info, dict):
             raise KdocsSyncError("云表格验证失败。")
         name = str(info.get("name") or "学院共享表.xlsx")
-        canonical_link = _get_link(file_id) or link_url.strip()
+        canonical_link = _get_link(file_id) or link_url
         config = _load_config()
         config["bindings"][cloud_key] = {
             "file_id": file_id,
@@ -410,7 +578,7 @@ def _publish_new(path: Path, cloud_key: str, progress_callback: ProgressCallback
     _emit_progress(progress_callback, 22, "正在上传 Excel", "首次创建学院云表")
     result = _api(
         "drive",
-        "upload-file",
+        "upload-new-file",
         {
             "name": path.name,
             "content_base64": base64.b64encode(raw).decode("ascii"),
@@ -670,6 +838,25 @@ def _local_value(value: Any) -> str:
     return _normalise(value)
 
 
+def _validated_kdocs_link(value: str) -> str:
+    if not isinstance(value, str):
+        raise KdocsSyncError("请输入有效的金山文档链接。")
+    parsed = urllib.parse.urlparse(value.strip())
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https" or not (host == "kdocs.cn" or host.endswith(".kdocs.cn")):
+        raise KdocsSyncError("仅支持安全的 kdocs.cn 金山文档链接。")
+    return parsed.geturl()
+
+
+def _cell_formula_payload(cell) -> str:
+    value = _local_value(cell.value)
+    if getattr(cell, "data_type", None) == "f":
+        return value
+    if isinstance(cell.value, str) and value.startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
 def _colour(value: Color | None) -> dict | None:
     if value is None:
         return None
@@ -861,7 +1048,7 @@ def _sync_sheet(
             if isinstance(cell, MergedCell):
                 continue
             key = (cell.row - 1, cell.column - 1)
-            value = _local_value(cell.value)
+            value = _cell_formula_payload(cell)
             local[key] = value
             if before.get(key, "") != value:
                 value_ops.append({

@@ -12,6 +12,16 @@
 .moral-template-toolbar > div:first-child strong,
 .moral-template-toolbar > div:first-child small { display: block; }
 .moral-template-toolbar > div:first-child strong { font-size: 13px; }
+.moral-template-toolbar > div:first-child strong span {
+    display: inline-block;
+    margin-left: 7px;
+    padding: 3px 7px;
+    border-radius: 999px;
+    background: rgba(255,255,255,.12);
+    color: rgba(255,255,255,.84);
+    font-size: 8px;
+    vertical-align: 1px;
+}
 .moral-template-toolbar > div:first-child small {
     margin-top: 3px;
     color: rgba(255,255,255,.68);
@@ -43,6 +53,11 @@
     background: var(--bg-secondary);
     box-shadow: 0 0 .5px rgba(0,0,0,.14), 0 1px 1px rgba(0,0,0,.08);
 }
+.moral-template-card.inactive { opacity: .62; box-shadow: none; }
+.moral-template-card.pending {
+    border-color: color-mix(in srgb, #b67832 48%, var(--border-color));
+    background: color-mix(in srgb, #fff4df 34%, var(--bg-secondary));
+}
 .moral-template-card.ready,
 .moral-template-card.manual {
     border-color: color-mix(in srgb, #2f6f57 46%, var(--border-color));
@@ -50,10 +65,27 @@
 }
 .moral-template-card-head {
     display: grid;
-    grid-template-columns: 32px minmax(0,1fr) auto;
+    grid-template-columns: 20px 32px minmax(0,1fr) auto;
     align-items: center;
     gap: 9px;
 }
+.moral-template-check { position: relative; display: grid; place-items: center; width: 18px; height: 18px; cursor: pointer; }
+.moral-template-check input { position: absolute; opacity: 0; pointer-events: none; }
+.moral-template-check span {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border: 1px solid color-mix(in srgb, #2f6f57 35%, var(--border-color));
+    border-radius: 5px;
+    background: var(--bg-secondary);
+    color: transparent;
+    font-size: 10px;
+    font-weight: 900;
+    transition: .16s ease;
+}
+.moral-template-check input:focus-visible + span { outline: 2px solid #2f6f57; outline-offset: 2px; }
+.moral-template-check input:checked + span { border-color: #2f6f57; background: #2f6f57; color: #fff; }
 .moral-template-card-head > span {
     display: grid;
     place-items: center;
@@ -127,6 +159,7 @@
 .moral-template-files button:hover { background: rgba(198,63,63,.1); color: #c63f3f; }
 .moral-template-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; }
 .moral-template-actions .btn { min-height: 29px; padding: 4px 8px; font-size: 8px; }
+.moral-template-actions .btn:disabled { opacity: .42; cursor: not-allowed; }
 .moral-custom-item-list:empty { display: none; }
 .moral-template-fixed-note { align-self: center; color: #2f6f57; font-size: 8px; font-weight: 700; }
 

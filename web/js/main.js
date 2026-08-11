@@ -6,9 +6,13 @@
  * Developer: 陈雨昂 · 顿河学院团委秘书处
  */
 
-const APP_VERSION = '8.0.0';
+const APP_VERSION = '14.0.9';
 let currentModule = 'gpa';
 let inWorkspace = false;
+let kdocsComponentStatus = null;
+let kdocsUpdateBusy = false;
+let applicationUpdateStatus = null;
+let applicationUpdateBusy = false;
 
 // Module state memory — preserves data when switching modules
 const moduleMemory = {
@@ -375,6 +379,8 @@ function saveModuleState(moduleName) {
             ? JSON.parse(JSON.stringify(moralVnextItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})))) : [];
         moduleMemory._moralFreshItems = typeof moralFreshItems !== 'undefined'
             ? JSON.parse(JSON.stringify(moralFreshItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})))) : [];
+        moduleMemory._moralSelectedTemplateProjects = typeof moralSelectedTemplateProjects !== 'undefined'
+            ? JSON.parse(JSON.stringify(moralSelectedTemplateProjects)) : null;
         moduleMemory._moralCloudOutputs = typeof moralCloudOutputs !== 'undefined'
             ? JSON.parse(JSON.stringify(moralCloudOutputs)) : [];
     }
@@ -419,6 +425,9 @@ function restoreModuleState(moduleName) {
         if (moduleMemory._moralVnextItems && typeof moralVnextItems !== 'undefined') {
             moralVnextItems = JSON.parse(JSON.stringify(moduleMemory._moralVnextItems));
             if (typeof moralRenderVnextItems === 'function') moralRenderVnextItems();
+        }
+        if (Object.prototype.hasOwnProperty.call(moduleMemory, '_moralSelectedTemplateProjects') && typeof moralSelectedTemplateProjects !== 'undefined') {
+            moralSelectedTemplateProjects = JSON.parse(JSON.stringify(moduleMemory._moralSelectedTemplateProjects));
         }
         if (moduleMemory._moralFreshItems && typeof moralFreshItems !== 'undefined') {
             moralFreshItems = JSON.parse(JSON.stringify(moduleMemory._moralFreshItems));
@@ -661,10 +670,20 @@ function renderSettings() {
             <button class="btn btn-secondary btn-sm" onclick="exportBackup()">💾 备份数据</button>
             <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick="importBackup()">📥 恢复数据</button>
         </div>
-        <div class="module-section"><h3>🔄 软件更新</h3>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">拿到新版exe后，在这里选择文件即可一键更新，无需卸载重装。</p>
-            <button class="btn btn-teal btn-sm" onclick="checkForUpdates()">📂 选择更新文件</button>
-            <span style="font-size:10px;color:var(--text-muted);margin-left:8px;">当前版本: v${APP_VERSION}</span></div>
+        <div class="module-section app-settings-update"><h3>程序在线更新</h3>
+            <p>启动时自动检查。以后发布新版后，使用者可以直接下载、校验并重启更新，不再重复安装完整安装包。</p>
+            <div class="app-settings-update-row">
+                <span>当前版本：v${APP_VERSION}</span>
+                <div><button class="btn btn-primary btn-sm" onclick="checkOnlineApplicationUpdate(true)">检查在线更新</button><button class="btn btn-ghost btn-sm" onclick="checkForUpdates()">选择本地 EXE</button></div>
+            </div>
+        </div>
+        <div class="module-section kdocs-settings-update"><h3>云表格连接组件</h3>
+            <p>程序启动后会自动检测官方版本；发现新版时提醒，由你确认后才安装，不会改动学生数据和云端表格。</p>
+            <div class="kdocs-settings-update-row">
+                <span id="kdocs-settings-version">${kdocsComponentVersionLabel()}</span>
+                <button class="btn btn-secondary btn-sm" onclick="manualCheckKdocsComponentUpdate()">检查组件更新</button>
+            </div>
+        </div>
         <div class="module-section"><h2>帮助</h2>
             <button class="btn btn-ghost btn-sm" onclick="showChangelog()">📋 更新日志</button>
             <button class="btn btn-ghost btn-sm" style="margin-left:8px;" onclick="showOnboarding()">👋 新手指引</button>
@@ -702,11 +721,271 @@ function doLogout() {
 }
 
 // ============================================================
-// V8.2: Local File Update System
+// Application and Kdocs connector updates
 // ============================================================
 async function autoCheckUpdates() {
-    // Silent - no network check needed for local app
-    // Future: could check a network path if configured
+    const appUpdateShown = await checkOnlineApplicationUpdate(false);
+    if (appUpdateShown) return;
+    try {
+        const status = await eel.kdocs_cli_version_status(false)();
+        kdocsComponentStatus = status;
+        refreshKdocsSettingsVersion();
+        if (!status?.success || !status.update_available) return;
+        if (sessionStorage.getItem('kdocs_cli_update_dismissed') === status.latest_version) return;
+        showKdocsComponentUpdate(status);
+    } catch (error) {
+        // Startup should never be blocked by a temporary network/update error.
+        console.warn('Kdocs connector update check failed:', error);
+    }
+}
+
+async function checkOnlineApplicationUpdate(manual = false) {
+    if (applicationUpdateBusy) return false;
+    if (manual) {
+        applicationUpdateBusy = true;
+        setUpdateModal(
+            '检查程序更新',
+            `<div class="kdocs-update-progress"><span class="kdocs-update-spinner"></span><h3>正在检查在线版本</h3><p>这里只下载很小的版本清单，不会下载完整安装包。</p></div>`,
+            '', true, dismissApplicationUpdate
+        );
+    }
+    try {
+        const status = await eel.app_update_status(Boolean(manual))();
+        applicationUpdateStatus = status;
+        applicationUpdateBusy = false;
+        if (!status?.success) {
+            if (manual) throw new Error(status?.error || '暂时无法连接在线更新服务');
+            return false;
+        }
+        if (status.update_available) {
+            if (!manual && sessionStorage.getItem('app_update_dismissed') === status.latest_version) return false;
+            showApplicationUpdate(status);
+            return true;
+        }
+        if (manual) {
+            setUpdateModal(
+                '程序在线更新',
+                `<div class="kdocs-update-result is-success"><div>✓</div><h3>当前已是最新版</h3><p>已安装 v${escapeHtml(status.current_version || APP_VERSION)}，无需下载任何文件。</p></div>`,
+                `<button class="btn btn-primary" onclick="dismissApplicationUpdate()">完成</button>`,
+                false, dismissApplicationUpdate
+            );
+        }
+        return false;
+    } catch (error) {
+        applicationUpdateBusy = false;
+        if (!manual) {
+            console.warn('Application update check failed:', error);
+            return false;
+        }
+        setUpdateModal(
+            '暂时无法检查程序更新',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>没有获取到在线版本</h3><p>${escapeHtml(error?.message || error)}</p><small>你仍可使用当前版本，或稍后在“系统设置”中重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissApplicationUpdate()">关闭</button><button class="btn btn-primary" onclick="checkOnlineApplicationUpdate(true)">重新检查</button>`,
+            false, dismissApplicationUpdate
+        );
+        return false;
+    }
+}
+
+function showApplicationUpdate(status) {
+    applicationUpdateStatus = status;
+    applicationUpdateBusy = false;
+    const notes = escapeHtml(status.notes || '本次版本包含功能改进与问题修复。').replace(/\r?\n/g, '<br>');
+    const size = Number(status.download_size || 0) / 1024 / 1024;
+    setUpdateModal(
+        '程序在线更新',
+        `<div class="kdocs-update-card app-update-card">
+            <div class="kdocs-update-mark" aria-hidden="true">D</div>
+            <div class="kdocs-update-copy"><span>顿河学院测评软件</span><h3>发现程序新版本</h3><p>只下载主程序文件，不重复下载运行环境和教程，更新完成后会自动重启。</p></div>
+            ${applicationVersionTrack(status)}
+            <div class="app-update-notes"><strong>本次更新</strong><p>${notes}</p></div>
+            <div class="kdocs-update-note">下载约 ${size ? size.toFixed(1) + ' MB' : '45 MB'}，安装前会校验 SHA-256；失败时保留当前版本。</div>
+        </div>`,
+        `<button class="btn btn-secondary" onclick="dismissApplicationUpdate()">稍后提醒</button><button class="btn btn-primary" onclick="downloadAndInstallApplicationUpdate()">下载并更新</button>`,
+        false, dismissApplicationUpdate
+    );
+}
+
+function applicationVersionTrack(status) {
+    return `<div class="kdocs-version-track"><div><small>当前版本</small><strong>v${escapeHtml(status.current_version || APP_VERSION)}</strong></div><span aria-hidden="true">→</span><div class="is-latest"><small>最新版本</small><strong>v${escapeHtml(status.latest_version || '未知')}</strong></div></div>`;
+}
+
+function dismissApplicationUpdate() {
+    if (applicationUpdateBusy) return;
+    if (applicationUpdateStatus?.update_available && applicationUpdateStatus.latest_version) {
+        sessionStorage.setItem('app_update_dismissed', applicationUpdateStatus.latest_version);
+    }
+    document.getElementById('update-overlay').classList.add('hidden');
+}
+
+async function downloadAndInstallApplicationUpdate() {
+    if (applicationUpdateBusy) return;
+    applicationUpdateBusy = true;
+    setUpdateModal(
+        '正在下载程序更新',
+        `<div class="app-update-download"><span class="kdocs-update-spinner"></span><h3 id="app-update-stage" aria-live="polite">正在准备下载</h3><div class="app-update-progress-track" role="progressbar" aria-labelledby="app-update-stage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="app-update-progress-fill"></i></div><strong id="app-update-progress-value">0%</strong><p>下载完成后将自动校验并重启程序。</p></div>`,
+        '', true, dismissApplicationUpdate
+    );
+    try {
+        const started = await eel.app_update_start_download()();
+        if (!started?.success || !started.job_id) throw new Error(started?.error || '无法开始下载');
+        let job = null;
+        while (true) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            job = await eel.app_update_get_progress(started.job_id)();
+            if (!job?.success) throw new Error(job?.error || '无法读取下载进度');
+            const percent = Math.max(0, Math.min(100, Number(job.percent || 0)));
+            const fill = document.getElementById('app-update-progress-fill');
+            const track = fill?.parentElement;
+            const value = document.getElementById('app-update-progress-value');
+            const stage = document.getElementById('app-update-stage');
+            if (fill) fill.style.width = `${percent}%`;
+            if (track) track.setAttribute('aria-valuenow', String(Math.round(percent)));
+            if (value) value.textContent = `${Math.round(percent)}%`;
+            if (stage) stage.textContent = job.stage || '正在下载';
+            if (job.done) break;
+        }
+        if (!job.result?.success || !job.result?.updated) throw new Error(job.result?.error || job.result?.message || '新版没有准备完成');
+        document.getElementById('app-update-stage').textContent = '校验通过，正在重新启动';
+        const installed = await eel.app_update_install(started.job_id)();
+        if (!installed?.success) throw new Error(installed?.error || '无法启动替换程序');
+    } catch (error) {
+        applicationUpdateBusy = false;
+        setUpdateModal(
+            '程序更新未完成',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>当前版本没有被替换</h3><p>${escapeHtml(error?.message || error)}</p><small>已下载的不完整文件会被清理，可以安全重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissApplicationUpdate()">稍后再试</button><button class="btn btn-primary" onclick="downloadAndInstallApplicationUpdate()">重新下载</button>`,
+            false, dismissApplicationUpdate
+        );
+    }
+}
+
+function kdocsComponentVersionLabel() {
+    if (!kdocsComponentStatus?.success) return '版本：启动后自动检测';
+    const current = escapeHtml(kdocsComponentStatus.current_version || '未知');
+    return kdocsComponentStatus.update_available
+        ? `当前 v${current} · 可更新至 v${escapeHtml(kdocsComponentStatus.latest_version)}`
+        : `当前 v${current} · 已是最新版`;
+}
+
+function refreshKdocsSettingsVersion() {
+    const label = document.getElementById('kdocs-settings-version');
+    if (label) label.innerHTML = kdocsComponentVersionLabel();
+}
+
+function setUpdateModal(title, body, footer, locked = false, closeHandler = dismissKdocsComponentUpdate) {
+    const overlay = document.getElementById('update-overlay');
+    document.getElementById('update-title').textContent = title;
+    document.getElementById('update-body').innerHTML = body;
+    document.getElementById('update-footer').innerHTML = footer;
+    overlay.classList.toggle('modal-locked', locked);
+    const closeButton = document.getElementById('update-close');
+    closeButton.hidden = locked;
+    closeButton.onclick = closeHandler;
+    overlay.classList.remove('hidden');
+}
+
+function kdocsVersionTrack(status) {
+    return `<div class="kdocs-version-track">
+        <div><small>当前版本</small><strong>v${escapeHtml(status.current_version || '未知')}</strong></div>
+        <span aria-hidden="true">→</span>
+        <div class="is-latest"><small>最新版本</small><strong>v${escapeHtml(status.latest_version || '未知')}</strong></div>
+    </div>`;
+}
+
+function showKdocsComponentUpdate(status) {
+    kdocsComponentStatus = status;
+    kdocsUpdateBusy = false;
+    setUpdateModal(
+        '云表格组件更新',
+        `<div class="kdocs-update-card">
+            <div class="kdocs-update-mark" aria-hidden="true">W</div>
+            <div class="kdocs-update-copy">
+                <span>金山文档连接组件</span>
+                <h3>发现可用的新版本</h3>
+                <p>新版用于保持云表格接口兼容。更新只替换本机连接组件，不会改动学生数据、模板或已同步的云表格。</p>
+            </div>
+            ${kdocsVersionTrack(status)}
+            <div class="kdocs-update-note">安装期间请暂时不要同步云表格，通常几十秒即可完成。</div>
+        </div>`,
+        `<button class="btn btn-secondary" onclick="dismissKdocsComponentUpdate()">稍后提醒</button>
+         <button class="btn btn-primary" onclick="installKdocsComponentUpdate()">立即更新</button>`
+    );
+}
+
+function dismissKdocsComponentUpdate() {
+    if (kdocsUpdateBusy) return;
+    if (kdocsComponentStatus?.update_available && kdocsComponentStatus.latest_version) {
+        sessionStorage.setItem('kdocs_cli_update_dismissed', kdocsComponentStatus.latest_version);
+    }
+    document.getElementById('update-overlay').classList.add('hidden');
+}
+
+async function manualCheckKdocsComponentUpdate() {
+    if (kdocsUpdateBusy) return;
+    kdocsUpdateBusy = true;
+    setUpdateModal(
+        '检查组件更新',
+        `<div class="kdocs-update-progress"><span class="kdocs-update-spinner"></span><h3>正在连接官方更新服务</h3><p>请稍候，不会影响当前页面的数据。</p></div>`,
+        '',
+        true, dismissKdocsComponentUpdate
+    );
+    try {
+        const status = await eel.kdocs_cli_version_status(true)();
+        kdocsComponentStatus = status;
+        refreshKdocsSettingsVersion();
+        kdocsUpdateBusy = false;
+        if (!status?.success) throw new Error(status?.error || '暂时无法获取版本信息');
+        if (status.update_available) {
+            showKdocsComponentUpdate(status);
+            return;
+        }
+        setUpdateModal(
+            '云表格组件更新',
+            `<div class="kdocs-update-result is-success"><div>✓</div><h3>当前已是最新版</h3><p>已安装 v${escapeHtml(status.current_version || '未知')}，可以正常使用云表格同步。</p></div>`,
+            `<button class="btn btn-primary" onclick="dismissKdocsComponentUpdate()">完成</button>`
+        );
+    } catch (error) {
+        kdocsUpdateBusy = false;
+        setUpdateModal(
+            '暂时无法检查更新',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>没有获取到版本信息</h3><p>${escapeHtml(error?.message || error)}</p><small>请检查网络连接，稍后可在“系统设置”中重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissKdocsComponentUpdate()">关闭</button>
+             <button class="btn btn-primary" onclick="manualCheckKdocsComponentUpdate()">重新检查</button>`
+        );
+    }
+}
+
+async function installKdocsComponentUpdate() {
+    if (kdocsUpdateBusy) return;
+    kdocsUpdateBusy = true;
+    setUpdateModal(
+        '正在更新云表格组件',
+        `<div class="kdocs-update-progress"><span class="kdocs-update-spinner"></span><h3>正在下载并安装官方版本</h3><p>请保持网络连接，完成前不要关闭程序。</p></div>`,
+        '',
+        true, dismissKdocsComponentUpdate
+    );
+    try {
+        const result = await eel.kdocs_upgrade_cli()();
+        if (!result?.success) throw new Error(result?.error || '组件更新失败');
+        kdocsComponentStatus = result;
+        kdocsUpdateBusy = false;
+        sessionStorage.removeItem('kdocs_cli_update_dismissed');
+        refreshKdocsSettingsVersion();
+        setUpdateModal(
+            '云表格组件更新',
+            `<div class="kdocs-update-result is-success"><div>✓</div><h3>${result.updated === false ? '当前已是最新版' : '更新完成'}</h3><p>云表格连接组件现为 v${escapeHtml(result.current_version || result.latest_version || '最新')}，无需重启即可继续使用。</p></div>`,
+            `<button class="btn btn-primary" onclick="dismissKdocsComponentUpdate()">完成</button>`
+        );
+    } catch (error) {
+        kdocsUpdateBusy = false;
+        setUpdateModal(
+            '组件更新失败',
+            `<div class="kdocs-update-result is-error"><div>!</div><h3>这次没有更新成功</h3><p>${escapeHtml(error?.message || error)}</p><small>原有组件和数据不会被删除，可以稍后重试。</small></div>`,
+            `<button class="btn btn-secondary" onclick="dismissKdocsComponentUpdate()">稍后再试</button>
+             <button class="btn btn-primary" onclick="installKdocsComponentUpdate()">重新更新</button>`
+        );
+    }
 }
 
 async function checkForUpdates() {
@@ -862,6 +1141,7 @@ function saveAllToMemory() {
         moralExistingSource: safeGet(() => ({path:moralExistingSource.path || '', mappings:moralExistingSource.mappings || {}, scope_classes:moralExistingSource.scope_classes || []}), {path:'',mappings:{},scope_classes:[]}),
         moralVnextItems: safeGet(() => moralVnextItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})), []),
         moralFreshItems: safeGet(() => moralFreshItems.map(item => ({...item, sources:(item.sources||[]).map(source => ({...source}))})), []),
+        moralSelectedTemplateProjects: safeGet(() => moralSelectedTemplateProjects === null ? null : [...moralSelectedTemplateProjects], null),
         moralCloudOutputs: safeGet(() => [...moralCloudOutputs], []),
         moralVnextScoring: {
             base: Number(document.getElementById('moral-vnext-base')?.value ?? 115),
@@ -924,6 +1204,7 @@ function restoreAllFromMemory() {
         if (data.moralVnextItems) moduleMemory._moralVnextItems = data.moralVnextItems;
         if (data.moralVnextScoring) moduleMemory._moralVnextScoring = data.moralVnextScoring;
         if (data.moralFreshItems) moduleMemory._moralFreshItems = data.moralFreshItems;
+        if (Object.prototype.hasOwnProperty.call(data, 'moralSelectedTemplateProjects')) moduleMemory._moralSelectedTemplateProjects = data.moralSelectedTemplateProjects;
         if (data.moralFreshScoring) moduleMemory._moralFreshScoring = data.moralFreshScoring;
         if (data.moralCloudOutputs) {
             moduleMemory._moralCloudOutputs = data.moralCloudOutputs;

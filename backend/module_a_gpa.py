@@ -364,7 +364,12 @@ def process_gpa_batch(input_paths: list, output_dir: str,
                 cell.alignment = center_align
                 cell.border = thin_border
 
-                if score_val is not None and not cinfo['is_pe'] and cinfo['credit'] > 0:
+                # A five-level course has both an original grade column and a
+                # numeric conversion column in the main table. Count the
+                # underlying course once so ranking uses the same GPA as the
+                # visible Excel formula.
+                if (score_val is not None and not cinfo['is_pe'] and
+                        cinfo['credit'] > 0 and base_course not in student_has_score):
                     total_credit_for_gpa += cinfo['credit']
                     gpa_numeric += score_val * cinfo['credit']
                     student_has_score.add(base_course)

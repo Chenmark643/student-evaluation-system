@@ -23,6 +23,7 @@ else:
 sys.path.insert(0, BASE_DIR)
 
 from backend.api import DesktopApi  # noqa: E402
+from backend.app_update import mark_app_update_healthy  # noqa: E402
 from webview2_runtime import get_webview2_version  # noqa: E402
 
 
@@ -127,6 +128,12 @@ def start_app() -> None:
         background_color="#f5f5f7",
     )
     api.attach_window(window)
+
+    def report_update_health(*_args) -> None:
+        if mark_app_update_healthy():
+            _log_startup("在线更新启动健康检查通过")
+
+    window.events.loaded += report_update_health
 
     _log_startup(f"启动 pywebview，平台={platform.system()}")
     gui = "edgechromium" if platform.system() == "Windows" else (

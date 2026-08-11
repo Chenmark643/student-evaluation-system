@@ -74,15 +74,26 @@ from backend.import_studio import (
 from backend.quality_presets import (
     build_official_presets, calculate_activity_score, validate_manual_score,
 )
+from backend.quality_file_recognizer import (
+    recognize_quality_bonus_file as recognize_quality_bonus_file_impl,
+)
+from backend.app_update import (
+    download_app_update as download_app_update_impl,
+    get_app_update_status as get_app_update_status_impl,
+    inspect_windows_executable as inspect_windows_executable_impl,
+    launch_windows_replacement as launch_windows_replacement_impl,
+)
 from backend.kdocs_sync import (
     auth_status as kdocs_auth_status_impl,
     bind_workbook as kdocs_bind_workbook_impl,
     get_binding as kdocs_get_binding_impl,
+    get_cli_version_status as kdocs_cli_version_status_impl,
     get_sync_overview as kdocs_get_sync_overview_impl,
     login as kdocs_login_impl,
     logout as kdocs_logout_impl,
     reorder_bound_workbook as kdocs_reorder_workbook_impl,
     sync_workbook as kdocs_sync_workbook_impl,
+    upgrade_cli as kdocs_upgrade_cli_impl,
 )
 
 
@@ -137,6 +148,18 @@ def kdocs_login() -> dict:
 def kdocs_logout() -> dict:
     """Disconnect the local WPS account by removing its saved credential."""
     return kdocs_logout_impl()
+
+
+@eel.expose
+def kdocs_cli_version_status(force: bool = False) -> dict:
+    """Return the installed/latest cloud connector versions."""
+    return kdocs_cli_version_status_impl(bool(force))
+
+
+@eel.expose
+def kdocs_upgrade_cli() -> dict:
+    """Upgrade the Kdocs connector after the user confirms in the desktop UI."""
+    return kdocs_upgrade_cli_impl()
 
 
 @eel.expose
@@ -703,6 +726,12 @@ def read_roster_for_quality(roster_path: str) -> dict:
 
 
 @eel.expose
+def recognize_quality_bonus_file(file_path: str, roster: dict) -> dict:
+    """Read an Excel bonus list and match its people against the active roster."""
+    return recognize_quality_bonus_file_impl(file_path, roster)
+
+
+@eel.expose
 def export_quality_with_roster(roster: dict, quality_data: dict,
                                 output_path: str, thresholds=None,
                                 major_filter: str = '') -> dict:
@@ -1055,6 +1084,106 @@ def get_app_version() -> str:
 # V8.2: Local File Update System
 # ============================================================
 
+_APP_UPDATE_JOBS = {}
+_APP_UPDATE_JOBS_LOCK = threading.Lock()
+_APP_UPDATE_INSTALL_LOCK = threading.Lock()
+_APP_UPDATE_INSTALLING = False
+
+
+def _cloud_sync_is_active() -> bool:
+    with _KDOCS_JOBS_LOCK:
+        return any(not item.get("done") for item in _KDOCS_JOBS.values())
+
+
+def _begin_app_update_install() -> bool:
+    global _APP_UPDATE_INSTALLING
+    with _APP_UPDATE_INSTALL_LOCK:
+        if _APP_UPDATE_INSTALLING:
+            return False
+        _APP_UPDATE_INSTALLING = True
+        return True
+
+
+def _cancel_app_update_install() -> None:
+    global _APP_UPDATE_INSTALLING
+    with _APP_UPDATE_INSTALL_LOCK:
+        _APP_UPDATE_INSTALLING = False
+
+
+@eel.expose
+def app_update_status(force: bool = False) -> dict:
+    """Check the small online release manifest for a newer application."""
+    return get_app_update_status_impl(bool(force))
+
+
+@eel.expose
+def app_update_start_download() -> dict:
+    """Download and verify a program update in a background worker."""
+    job_id = uuid.uuid4().hex
+    with _APP_UPDATE_JOBS_LOCK:
+        active = next(
+            (key for key, value in _APP_UPDATE_JOBS.items() if not value.get("done")),
+            None,
+        )
+        if active:
+            return {"success": True, "job_id": active, "existing": True}
+        _APP_UPDATE_JOBS[job_id] = {
+            "success": True,
+            "job_id": job_id,
+            "done": False,
+            "status": "downloading",
+            "percent": 0,
+            "stage": "正在准备下载",
+        }
+
+    def progress(percent: int, stage: str) -> None:
+        with _APP_UPDATE_JOBS_LOCK:
+            if job_id in _APP_UPDATE_JOBS:
+                _APP_UPDATE_JOBS[job_id].update(
+                    percent=max(0, min(100, int(percent))),
+                    stage=str(stage or "正在下载"),
+                )
+
+    def worker() -> None:
+        result = download_app_update_impl(progress)
+        ok = bool(result.get("success") and result.get("updated"))
+        with _APP_UPDATE_JOBS_LOCK:
+            _APP_UPDATE_JOBS[job_id].update(
+                done=True,
+                status="ready" if ok else ("current" if result.get("success") else "error"),
+                percent=100 if result.get("success") else _APP_UPDATE_JOBS[job_id].get("percent", 0),
+                stage="新版已准备完成" if ok else result.get("message", result.get("error", "下载未完成")),
+                result=result,
+            )
+
+    threading.Thread(target=worker, name=f"app-update-{job_id[:8]}", daemon=True).start()
+    return {"success": True, "job_id": job_id}
+
+
+@eel.expose
+def app_update_get_progress(job_id: str) -> dict:
+    with _APP_UPDATE_JOBS_LOCK:
+        job = _APP_UPDATE_JOBS.get(str(job_id))
+        return dict(job) if job else {"success": False, "error": "找不到该更新任务。"}
+
+
+@eel.expose
+def app_update_install(job_id: str) -> dict:
+    """Apply a verified online update, then close and restart the application."""
+    with _APP_UPDATE_JOBS_LOCK:
+        job = dict(_APP_UPDATE_JOBS.get(str(job_id)) or {})
+    result = job.get("result") or {}
+    if not job.get("done") or not result.get("success") or not result.get("local_path"):
+        return {"success": False, "error": "新版尚未下载完成。"}
+    if _cloud_sync_is_active():
+        return {"success": False, "error": "云表正在同步，请等待同步完成后再更新程序。"}
+    if not _begin_app_update_install():
+        return {"success": False, "error": "程序更新已经开始，请勿重复操作。"}
+    launched = launch_windows_replacement_impl(result["local_path"], result.get("sha256", ""))
+    if not launched.get("success"):
+        _cancel_app_update_install()
+    return launched
+
 @eel.expose
 def verify_new_exe(filepath: str) -> dict:
     """Verify that a file looks like a valid new version exe.
@@ -1062,18 +1191,7 @@ def verify_new_exe(filepath: str) -> dict:
     Returns:
         {valid, version, error}
     """
-    try:
-        if not filepath or not os.path.exists(filepath):
-            return {'valid': False, 'error': '文件不存在'}
-        if not filepath.lower().endswith('.exe'):
-            return {'valid': False, 'error': '不是exe文件'}
-        # Check file size (must be > 50MB to be valid)
-        size = os.path.getsize(filepath)
-        if size < 50 * 1024 * 1024:
-            return {'valid': False, 'error': f'文件太小({size/1024/1024:.0f}MB)，可能不完整'}
-        return {'valid': True, 'size': size, 'filename': os.path.basename(filepath)}
-    except Exception as e:
-        return {'valid': False, 'error': str(e)}
+    return inspect_windows_executable_impl(filepath)
 
 
 @eel.expose
@@ -1085,51 +1203,16 @@ def install_local_update(new_exe_path: str) -> bool:
 
     Returns True if updater launched successfully.
     """
-    try:
-        import sys as _sys
-
-        if getattr(_sys, 'frozen', False):
-            current_path = _sys.executable
-        else:
-            current_path = _sys.executable
-
-        current_dir = os.path.dirname(current_path)
-        old_name = os.path.basename(current_path)
-
-        updater_path = os.path.join(current_dir, '_updater.bat')
-        with open(updater_path, 'w', encoding='gbk') as f:
-            f.write(f'''@echo off
-chcp 65001 >nul
-title 更新学生综合测评系统...
-echo.
-echo   正在更新学生综合测评系统...
-echo   请勿关闭此窗口
-echo.
-:wait
-timeout /t 2 /nobreak >nul
-tasklist /FI "IMAGENAME eq {old_name}" 2>NUL | find /I "{old_name}" >NUL
-if %errorlevel% == 0 goto wait
-echo   正在替换...
-move /Y "{new_exe_path}" "{current_path}"
-if exist "{current_path}" (
-    echo   更新完成！即将启动...
-    start "" "{current_path}"
-) else (
-    echo   替换失败！请手动操作
-    pause
-)
-del "%~f0" 2>nul
-''')
-
-        subprocess.Popen(
-            ['cmd', '/c', 'start', '更新', updater_path],
-            shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE
-        )
-        return True
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
+    if _cloud_sync_is_active() or not _begin_app_update_install():
         return False
+    inspected = inspect_windows_executable_impl(new_exe_path)
+    if not inspected.get("valid"):
+        _cancel_app_update_install()
+        return False
+    result = launch_windows_replacement_impl(inspected["path"], inspected["sha256"])
+    if not result.get("success"):
+        _cancel_app_update_install()
+    return bool(result.get("success"))
 
 
 @eel.expose
