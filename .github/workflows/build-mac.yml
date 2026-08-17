@@ -6,7 +6,7 @@ on:
       version:
         description: "版本号（留空则使用 config.py）"
         required: false
-        default: "14.0.10"
+        default: "14.1.0"
   push:
     branches: [main, master, "macos-*"]
     tags: ["v*"]

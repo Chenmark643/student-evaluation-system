@@ -66,7 +66,7 @@ WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 
 # App metadata
-APP_VERSION = "14.0.10"
+APP_VERSION = "14.1.0"
 
 # Module A constants
 PE_KEYWORDS = ['体育', '運動', 'PE']

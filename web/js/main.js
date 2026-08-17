@@ -6,7 +6,7 @@
  * Developer: 陈雨昂 · 顿河学院团委秘书处
  */
 
-const APP_VERSION = '14.0.10';
+const APP_VERSION = '14.1.0';
 let currentModule = 'gpa';
 let inWorkspace = false;
 let kdocsComponentStatus = null;
@@ -166,7 +166,7 @@ function ensureEvaluationTask() {
 
 function getTaskModuleState() {
     const completed = window.CompletionCelebration?.state?.() || {};
-    return Object.fromEntries(['gpa','moral','quality','comprehensive'].map(key => [key, Boolean(completed[key]?.done)]));
+    return Object.fromEntries(['gpa','moral','quality','comprehensive','annual'].map(key => [key, Boolean(completed[key]?.done)]));
 }
 
 function renderTaskCenter() {
@@ -181,10 +181,11 @@ function renderTaskCenter() {
         ['moral', '02', '德育测评', '汇总出勤、卫生与评议数据'],
         ['quality', '03', '素质拓展', '录入加分项目并执行上限管控'],
         ['comprehensive', '04', '综合测评', '汇总三项结果并生成排名'],
-        ['toolbox', '05', '荣誉资格核验台', '评奖评优申报资格辅助核验']
+        ['annual', '05', '学年排名', '合并两学期绩点或综测并生成百分比'],
+        ['toolbox', '06', '荣誉资格核验台', '评奖评优申报资格辅助核验']
     ];
     const readyCount = Object.values(state).filter(Boolean).length;
-    const progress = readyCount * 25;
+    const progress = readyCount * 20;
     const history = getHistory().slice(0, 4);
     const safe = value => String(value || '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 
@@ -193,9 +194,9 @@ function renderTaskCenter() {
             <div class="task-hero-main">
                 <div class="task-status-row"><span class="task-live-dot"></span>${safe(active.status)}<span>·</span><span>${safe(active.grade)}</span></div>
                 <h2>${safe(active.name)}</h2>
-                <p>${safe(active.semester)} · 当前任务中的四个模块继续使用原有计算规则</p>
+                <p>${safe(active.semester)} · 五个测评模块均保留可追溯的计算规则</p>
                 <div class="task-progress"><span style="width:${progress}%"></span></div>
-                <small>完成进度 ${progress}% · ${readyCount}/4 项工作已经完成</small>
+                <small>完成进度 ${progress}% · ${readyCount}/5 项工作已经完成</small>
             </div>
             <div class="task-progress-ring" style="--task-progress:${progress * 3.6}deg"><strong>${progress}%</strong><span>任务进度</span></div>
         </section>
@@ -336,13 +337,13 @@ function enterModule(moduleName) {
     document.getElementById('module-select-page').style.display = 'none';
     document.getElementById('app').style.display = '';
 
-    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', toolbox:'荣誉资格核验台', cloud:'学院云协作' };
+    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', annual:'学年排名汇总', toolbox:'荣誉资格核验台', cloud:'学院云协作' };
     document.getElementById('module-title').textContent = titles[moduleName] || moduleName;
 
     // Show persistent widgets in workspace
     showCornerWidgets();
 
-    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace };
+    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, annual:renderModuleAnnual, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace };
     if (renderers[moduleName]) renderers[moduleName]();
     setTimeout(function() { if (window.refreshEmojis) refreshEmojis(); }, 200);
 
@@ -1111,9 +1112,9 @@ function initThemeToggle() {
 
 function initKeyboard() {
     document.addEventListener('keydown', e => {
-        if (e.ctrlKey && e.key >= '1' && e.key <= '4') {
+        if (e.ctrlKey && e.key >= '1' && e.key <= '5') {
             e.preventDefault();
-            const mods = ['gpa', 'moral', 'quality', 'comprehensive'];
+            const mods = ['gpa', 'moral', 'quality', 'comprehensive', 'annual'];
             if (inWorkspace) switchModule(mods[parseInt(e.key) - 1]);
         }
     });
