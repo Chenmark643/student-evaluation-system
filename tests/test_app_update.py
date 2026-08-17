@@ -1,6 +1,9 @@
 import io
+import json
+import os
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,20 +11,16 @@ from backend import app_update
 
 
 class AppUpdateTests(unittest.TestCase):
-    def test_powershell_paths_are_literal_and_keep_unicode(self):
-        self.assertEqual(
-            app_update._powershell_literal("C:\\顿河\\it's 100%\\app.exe"),
-            "'C:\\顿河\\it''s 100%\\app.exe'",
-        )
-
     def manifest(self, **updates):
         value = {
+            "schema": 2,
             "version": "99.1.0",
             "platform": "windows-x64",
             "url": "https://github.com/example/project/releases/download/v99.1.0/app.exe",
             "sha256": "a" * 64,
             "size": 6 * 1024 * 1024,
             "notes": "在线更新测试",
+            "published_at": "2099-01-01T00:00:00Z",
         }
         value.update(updates)
         return value
@@ -31,6 +30,41 @@ class AppUpdateTests(unittest.TestCase):
             app_update._validated_manifest(self.manifest(url="http://example.com/app.exe"))
         with self.assertRaises(app_update.AppUpdateError):
             app_update._validated_manifest(self.manifest(sha256="not-a-hash"))
+
+    def test_github_release_digest_becomes_trusted_manifest_hash(self):
+        release = {
+            "tag_name": "v99.1.0",
+            "body": "官方发布",
+            "published_at": "2099-01-01T00:00:00Z",
+            "assets": [
+                {
+                    "name": app_update.GITHUB_WINDOWS_ASSET,
+                    "browser_download_url": self.manifest()["url"],
+                    "digest": "sha256:" + ("b" * 64),
+                    "size": 6 * 1024 * 1024,
+                }
+            ],
+        }
+        manifest = app_update._manifest_from_github_release(release)
+
+        self.assertEqual(manifest["sha256"], "b" * 64)
+        self.assertEqual(manifest["version"], "99.1.0")
+
+    def test_manifest_fetch_falls_back_when_official_api_is_unavailable(self):
+        raw = json.dumps(self.manifest(), ensure_ascii=False).encode("utf-8")
+        with patch.object(
+            app_update,
+            "UPDATE_MANIFEST_URLS",
+            (app_update.GITHUB_MANIFEST_URL,),
+        ), patch.object(
+            app_update,
+            "_open_url",
+            side_effect=[urllib.error.URLError("blocked"), io.BytesIO(raw)],
+        ):
+            manifest = app_update._fetch_manifest()
+
+        validated = app_update._validated_manifest(manifest)
+        self.assertTrue(validated["download_urls"][0].startswith(app_update.CHINA_MIRROR_PREFIX))
 
     def test_status_compares_release_version_semantically(self):
         with patch.object(app_update, "_STATUS_CACHE", None), \
@@ -66,11 +100,15 @@ class AppUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(app_update, "UPDATE_DIR", Path(tmp) / "updates"), \
                 patch.object(app_update, "_fetch_manifest", return_value=manifest), \
-                patch.object(app_update, "_open_url", return_value=io.BytesIO(payload)):
+                patch.object(
+                    app_update,
+                    "_open_url",
+                    side_effect=[io.BytesIO(payload), io.BytesIO(payload)],
+                ):
             result = app_update.download_app_update()
 
         self.assertFalse(result["success"])
-        self.assertIn("校验失败", result["error"])
+        self.assertIn("官方校验值不一致", result["error"])
 
     def test_local_update_inspection_accepts_current_single_file_size(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -81,7 +119,7 @@ class AppUpdateTests(unittest.TestCase):
         self.assertTrue(result["valid"])
         self.assertEqual(len(result["sha256"]), 64)
 
-    def test_replacement_stages_manual_file_and_writes_health_rollback_script(self):
+    def test_replacement_stages_manual_file_and_waits_for_helper_handshake(self):
         payload = b"MZ" + (b"x" * (5 * 1024 * 1024))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -94,29 +132,97 @@ class AppUpdateTests(unittest.TestCase):
             sibling.write_text("keep", encoding="utf-8")
             target.write_bytes(b"MZ-old")
             digest = app_update._sha256(source)
+            ready = root / "updates" / f"helper-ready-{os.getpid()}-{digest[:12]}.txt"
+
+            def start_helper(*_args, **_kwargs):
+                ready.write_text("ready", encoding="utf-8")
+                process = unittest.mock.MagicMock()
+                process.poll.return_value = None
+                return process
+
             with patch.object(app_update.sys, "frozen", True, create=True), \
                     patch.object(app_update.sys, "executable", str(target)), \
                     patch.object(app_update, "UPDATE_DIR", root / "updates"), \
-                    patch.object(app_update.subprocess, "Popen") as popen, \
+                    patch.object(app_update.subprocess, "Popen", side_effect=start_helper) as popen, \
                     patch.object(app_update.threading, "Timer") as timer:
                 result = app_update.launch_windows_replacement(str(source), digest)
 
             self.assertTrue(result["success"])
             popen.assert_called_once()
             timer.return_value.start.assert_called_once()
-            script_path = next((root / "updates").glob("apply-update-*.ps1"))
-            script = script_path.read_text(encoding="utf-8-sig")
-            self.assertIn(".update-backup", script)
-            self.assertIn("DONCOLLEGE_UPDATE_HEALTH_MARKER", script)
-            self.assertIn("AddSeconds(60)", script)
-            self.assertIn("did not report healthy startup", script)
-            self.assertIn("Get-FileHash", script)
-            self.assertIn(digest, script)
-            self.assertNotIn(str(downloads), script)
-            self.assertIn("$targetBackedUp = $true", script)
+            command = popen.call_args.args[0]
+            self.assertEqual(command[1], app_update.UPDATE_HELPER_FLAG)
+            self.assertEqual(command[2], str(target.resolve()))
+            self.assertEqual(command[4], digest)
+            self.assertNotIn("powershell", " ".join(command).lower())
             self.assertTrue(sibling.exists())
             staged_sources = list((root / "updates").glob("manual-*/*.exe"))
             self.assertEqual(len(staged_sources), 1)
+
+    def test_update_helper_replaces_target_and_confirms_healthy_start(self):
+        old_payload = b"MZ-old"
+        new_payload = b"MZ-new-release"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            update_root = root / "updates"
+            source_dir = update_root / "99.1.0"
+            source_dir.mkdir(parents=True)
+            source = source_dir / "new.exe"
+            target = root / "installed.exe"
+            ready = update_root / "helper-ready.txt"
+            source.write_bytes(new_payload)
+            target.write_bytes(old_payload)
+            digest = app_update._sha256(source)
+
+            def start_new(_command, **kwargs):
+                Path(kwargs["env"]["DONCOLLEGE_UPDATE_HEALTH_MARKER"]).write_text(
+                    "healthy", encoding="utf-8"
+                )
+                process = unittest.mock.MagicMock()
+                process.poll.return_value = None
+                return process
+
+            with patch.object(app_update.sys, "frozen", True, create=True), \
+                    patch.object(app_update.sys, "executable", str(source)), \
+                    patch.object(app_update, "UPDATE_DIR", update_root), \
+                    patch.object(app_update, "UPDATE_RESULT_LOG", update_root / "last-update.log"), \
+                    patch.object(app_update, "_wait_for_windows_pid", return_value=True), \
+                    patch.object(app_update.subprocess, "Popen", side_effect=start_new):
+                result = app_update.run_windows_update_helper(
+                    [app_update.UPDATE_HELPER_FLAG, str(target), "1234", digest, str(ready)]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(target.read_bytes(), new_payload)
+            self.assertFalse(target.with_suffix(".exe.update-backup").exists())
+
+    def test_update_helper_restarts_old_app_when_pre_replace_check_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            update_root = root / "updates"
+            source_dir = update_root / "99.1.0"
+            source_dir.mkdir(parents=True)
+            source = source_dir / "new.exe"
+            target = root / "installed.exe"
+            ready = update_root / "helper-ready.txt"
+            source.write_bytes(b"MZ-new")
+            target.write_bytes(b"MZ-old")
+
+            with patch.object(app_update.sys, "frozen", True, create=True), \
+                    patch.object(app_update.sys, "executable", str(source)), \
+                    patch.object(app_update, "UPDATE_DIR", update_root), \
+                    patch.object(app_update, "UPDATE_RESULT_LOG", update_root / "last-update.log"), \
+                    patch.object(app_update, "_wait_for_windows_pid", return_value=True), \
+                    patch.object(app_update.subprocess, "Popen") as popen:
+                result = app_update.run_windows_update_helper(
+                    [app_update.UPDATE_HELPER_FLAG, str(target), "1234", "0" * 64, str(ready)]
+                )
+
+            self.assertEqual(result, 1)
+            self.assertEqual(target.read_bytes(), b"MZ-old")
+            popen.assert_called_once_with(
+                [str(target.resolve())], close_fds=True, env=unittest.mock.ANY
+            )
 
     def test_health_marker_must_be_direct_child_of_update_root(self):
         with tempfile.TemporaryDirectory() as tmp:

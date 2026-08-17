@@ -23,7 +23,10 @@ else:
 sys.path.insert(0, BASE_DIR)
 
 from backend.api import DesktopApi  # noqa: E402
-from backend.app_update import mark_app_update_healthy  # noqa: E402
+from backend.app_update import (  # noqa: E402
+    mark_app_update_healthy,
+    run_windows_update_helper,
+)
 from webview2_runtime import get_webview2_version  # noqa: E402
 
 
@@ -152,6 +155,10 @@ def start_app() -> None:
 
 
 if __name__ == "__main__":
+    update_helper_exit = run_windows_update_helper()
+    if update_helper_exit is not None:
+        sys.exit(update_helper_exit)
+
     if platform.system() == "Windows":
         try:
             import ctypes

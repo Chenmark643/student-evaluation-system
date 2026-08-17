@@ -25,10 +25,24 @@ from typing import Any, Callable
 from config import APP_NAME, APP_VERSION, DATA_DIR
 
 
-UPDATE_MANIFEST_URL = os.environ.get(
-    "DONCOLLEGE_UPDATE_MANIFEST_URL",
+GITHUB_MANIFEST_URL = (
     "https://github.com/Chenmark643/student-evaluation-system/"
-    "releases/latest/download/update-windows.json",
+    "releases/latest/download/update-windows.json"
+)
+GITHUB_RELEASE_API_URL = (
+    "https://api.github.com/repos/Chenmark643/student-evaluation-system/releases/latest"
+)
+GITHUB_WINDOWS_ASSET = "DonCollege-Student-Evaluation-windows-x64.exe"
+CHINA_MIRROR_PREFIX = "https://ghfast.top/"
+_configured_manifest_urls = (
+    os.environ.get("DONCOLLEGE_UPDATE_MANIFEST_URLS")
+    or os.environ.get("DONCOLLEGE_UPDATE_MANIFEST_URL")
+    or ""
+).strip()
+UPDATE_MANIFEST_URLS = tuple(
+    item.strip() for item in _configured_manifest_urls.split(";") if item.strip()
+) or (
+    GITHUB_MANIFEST_URL,
 )
 UPDATE_DIR = Path(DATA_DIR).resolve().parent / "updates"
 UPDATE_CACHE_SECONDS = 15 * 60
@@ -37,6 +51,8 @@ ALLOWED_DOWNLOAD_HOSTS = {
     "github.com",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
+    "api.github.com",
+    "ghfast.top",
 }
 _STATUS_LOCK = threading.Lock()
 _STATUS_CACHE: tuple[float, dict] | None = None
@@ -72,24 +88,67 @@ def _open_url(url: str, *, timeout: int = 25):
     return urllib.request.urlopen(request, timeout=timeout)
 
 
+def _manifest_from_github_release(release: dict) -> dict:
+    """Use GitHub's official asset digest as the trust anchor for mirrors."""
+    assets = release.get("assets") or []
+    asset = next(
+        (
+            item
+            for item in assets
+            if isinstance(item, dict) and item.get("name") == GITHUB_WINDOWS_ASSET
+        ),
+        None,
+    )
+    if not asset:
+        raise AppUpdateError("最新发布尚未提供 Windows 更新文件。")
+    digest = str(asset.get("digest") or "")
+    if not digest.lower().startswith("sha256:"):
+        raise AppUpdateError("GitHub 发布信息缺少安装包校验值。")
+    return {
+        "version": str(release.get("tag_name") or "").lstrip("vV"),
+        "platform": "windows-x64",
+        "url": str(asset.get("browser_download_url") or ""),
+        "sha256": digest.split(":", 1)[1].lower(),
+        "size": int(asset.get("size") or 0),
+        "notes": str(release.get("body") or "本次版本包含功能改进与问题修复。"),
+        "published_at": str(release.get("published_at") or ""),
+    }
+
+
 def _fetch_manifest() -> dict:
-    url = _https_url(UPDATE_MANIFEST_URL)
+    failures = []
     try:
-        with _open_url(url) as response:
-            raw = response.read(256 * 1024)
+        api_url = _https_url(GITHUB_RELEASE_API_URL, allowed_hosts=ALLOWED_DOWNLOAD_HOSTS)
+        with _open_url(api_url, timeout=15) as response:
+            release = json.loads(response.read(512 * 1024).decode("utf-8-sig"))
+        if not isinstance(release, dict):
+            raise AppUpdateError("GitHub 发布信息格式不正确。")
+        return _manifest_from_github_release(release)
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            raise AppUpdateError("在线发布源尚未提供 Windows 更新文件。") from exc
-        raise AppUpdateError(f"更新服务返回错误（HTTP {exc.code}）。") from exc
+        failures.append(f"GitHub API HTTP {exc.code}")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise AppUpdateError("暂时无法连接在线更新服务，请检查网络后重试。") from exc
-    try:
-        manifest = json.loads(raw.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise AppUpdateError("在线版本清单格式不正确。") from exc
-    if not isinstance(manifest, dict):
-        raise AppUpdateError("在线版本清单内容不正确。")
-    return manifest
+        failures.append(type(exc).__name__)
+    except (UnicodeDecodeError, json.JSONDecodeError, AppUpdateError) as exc:
+        failures.append(str(exc))
+
+    for candidate in UPDATE_MANIFEST_URLS:
+        url = _https_url(candidate)
+        try:
+            with _open_url(url) as response:
+                raw = response.read(256 * 1024)
+            manifest = json.loads(raw.decode("utf-8-sig"))
+            if not isinstance(manifest, dict):
+                raise AppUpdateError("在线版本清单内容不正确。")
+            return manifest
+        except urllib.error.HTTPError as exc:
+            failures.append(f"HTTP {exc.code}")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            failures.append(type(exc).__name__)
+        except (UnicodeDecodeError, json.JSONDecodeError, AppUpdateError) as exc:
+            failures.append(str(exc))
+    if failures and all(item == "HTTP 404" for item in failures):
+        raise AppUpdateError("在线发布源尚未提供 Windows 更新文件。")
+    raise AppUpdateError("暂时无法读取官方版本信息，请稍后重试。")
 
 
 def _validated_manifest(manifest: dict) -> dict:
@@ -98,7 +157,15 @@ def _validated_manifest(manifest: dict) -> dict:
         raise AppUpdateError("在线版本号格式不正确。")
     if str(manifest.get("platform") or "windows-x64") != "windows-x64":
         raise AppUpdateError("最新发布不适用于当前 Windows 程序。")
-    url = _https_url(str(manifest.get("url") or ""), allowed_hosts=ALLOWED_DOWNLOAD_HOSTS)
+    original_url = _https_url(
+        str(manifest.get("url") or ""), allowed_hosts=ALLOWED_DOWNLOAD_HOSTS
+    )
+    urls = (
+        _https_url(
+            CHINA_MIRROR_PREFIX + original_url, allowed_hosts=ALLOWED_DOWNLOAD_HOSTS
+        ),
+        original_url,
+    )
     sha256 = str(manifest.get("sha256") or "").lower().strip()
     if not re.fullmatch(r"[0-9a-f]{64}", sha256):
         raise AppUpdateError("最新发布缺少有效的 SHA-256 校验值。")
@@ -108,7 +175,8 @@ def _validated_manifest(manifest: dict) -> dict:
     return {
         "version": version,
         "platform": "windows-x64",
-        "url": url,
+        "url": original_url,
+        "download_urls": urls,
         "sha256": sha256,
         "size": size,
         "notes": str(manifest.get("notes") or "本次版本包含功能改进与问题修复。")[:8000],
@@ -241,33 +309,43 @@ def download_app_update(progress_callback: ProgressCallback | None = None) -> di
 
         if progress_callback:
             progress_callback(1, "正在连接下载服务器")
-        written = 0
         expected_size = int(manifest["size"])
-        digest = hashlib.sha256()
-        try:
-            with _open_url(manifest["url"], timeout=60) as response, partial_path.open("wb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
-                    digest.update(chunk)
-                    written += len(chunk)
-                    if progress_callback:
-                        progress_callback(
-                            min(96, max(2, int(written / expected_size * 96))),
-                            f"正在下载新版（{written / 1024 / 1024:.1f} / {expected_size / 1024 / 1024:.1f} MB）",
-                        )
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise AppUpdateError("新版程序下载中断，请检查网络后重试。") from exc
+        download_failures = []
+        for index, download_url in enumerate(manifest["download_urls"]):
+            partial_path.unlink(missing_ok=True)
+            written = 0
+            digest = hashlib.sha256()
+            channel = "国内通道" if index == 0 else "国际通道"
+            if progress_callback:
+                progress_callback(1, f"正在连接{channel}")
+            try:
+                with _open_url(download_url, timeout=60) as response, partial_path.open("wb") as output:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        digest.update(chunk)
+                        written += len(chunk)
+                        if progress_callback:
+                            progress_callback(
+                                min(96, max(2, int(written / expected_size * 96))),
+                                f"{channel}下载中（{written / 1024 / 1024:.1f} / {expected_size / 1024 / 1024:.1f} MB）",
+                            )
+                if written != expected_size:
+                    raise AppUpdateError("下载文件大小与官方发布信息不一致。")
+                if digest.hexdigest().lower() != manifest["sha256"]:
+                    raise AppUpdateError("下载文件与 GitHub 官方校验值不一致。")
+                with partial_path.open("rb") as stream:
+                    if stream.read(2) != b"MZ":
+                        raise AppUpdateError("下载的文件不是有效的 Windows 程序。")
+                break
+            except (urllib.error.URLError, TimeoutError, OSError, AppUpdateError) as exc:
+                download_failures.append(f"{channel}: {exc}")
+        else:
+            detail = "；".join(download_failures[-2:])
+            raise AppUpdateError(f"国内、国际通道均下载失败：{detail}")
 
-        if written != expected_size:
-            raise AppUpdateError("新版程序下载不完整，已停止安装。")
-        if digest.hexdigest().lower() != manifest["sha256"]:
-            raise AppUpdateError("新版程序校验失败，已停止安装。")
-        with partial_path.open("rb") as stream:
-            if stream.read(2) != b"MZ":
-                raise AppUpdateError("下载的文件不是有效的 Windows 程序。")
         os.replace(partial_path, final_path)
         if progress_callback:
             progress_callback(100, "下载完成，校验已通过")
@@ -288,14 +366,6 @@ def download_app_update(progress_callback: ProgressCallback | None = None) -> di
                 partial_path.unlink()
         except OSError:
             pass
-
-
-def _powershell_literal(value: str) -> str:
-    """Return a single-quoted PowerShell literal without code interpolation."""
-    text = str(value)
-    if any(char in text for char in ("\x00", "\r", "\n")):
-        raise AppUpdateError("更新文件路径包含不支持的字符。")
-    return "'" + text.replace("'", "''") + "'"
 
 
 def _stage_replacement_source(source: Path, expected_sha256: str) -> Path:
@@ -339,8 +409,165 @@ def mark_app_update_healthy() -> bool:
         return False
 
 
+UPDATE_HELPER_FLAG = "--doncollege-apply-update"
+UPDATE_RESULT_LOG = UPDATE_DIR / "last-update.log"
+
+
+def _append_update_log(message: str) -> None:
+    try:
+        UPDATE_DIR.mkdir(parents=True, exist_ok=True)
+        with UPDATE_RESULT_LOG.open("a", encoding="utf-8") as stream:
+            stream.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+    except OSError:
+        pass
+
+
+def _wait_for_windows_pid(pid: int, timeout_seconds: int = 180) -> bool:
+    """Wait for a Windows process without depending on PowerShell."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        synchronize = 0x00100000
+        wait_object_0 = 0
+        handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, int(pid))
+        if not handle:
+            return True
+        try:
+            result = ctypes.windll.kernel32.WaitForSingleObject(
+                handle, max(1, int(timeout_seconds)) * 1000
+            )
+            return result == wait_object_0
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except (AttributeError, OSError, ValueError):
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                os.kill(int(pid), 0)
+            except OSError:
+                return True
+            time.sleep(0.25)
+        return False
+
+
+def run_windows_update_helper(argv: list[str] | None = None) -> int | None:
+    """Run replacement mode inside the downloaded new executable.
+
+    Returning ``None`` means this is a normal application start. Otherwise the
+    caller must terminate with the returned helper exit code.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args or args[0] != UPDATE_HELPER_FLAG:
+        return None
+    if len(args) != 5:
+        _append_update_log("更新助手参数数量不正确")
+        return 2
+
+    target = Path(args[1]).resolve()
+    try:
+        old_pid = int(args[2])
+    except ValueError:
+        _append_update_log("更新助手收到无效进程号")
+        return 2
+    expected_digest = str(args[3]).lower()
+    ready = Path(args[4]).resolve()
+    source = Path(sys.executable).resolve()
+    update_root = UPDATE_DIR.resolve()
+    backup = target.with_suffix(target.suffix + ".update-backup")
+    pending = target.with_suffix(target.suffix + ".update-new")
+    health = update_root / f"healthy-{old_pid}-{expected_digest[:12]}.txt"
+    new_process = None
+    target_backed_up = False
+
+    try:
+        if os.name != "nt" or not getattr(sys, "frozen", False):
+            raise AppUpdateError("更新助手只能由已安装的 Windows 新版程序运行。")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+            raise AppUpdateError("更新助手缺少有效校验值。")
+        if source.parent.parent != update_root or ready.parent != update_root:
+            raise AppUpdateError("更新助手路径不在受控临时目录中。")
+        if not target.is_file() or source == target:
+            raise AppUpdateError("更新助手找不到旧版主程序。")
+
+        ready.write_text("ready", encoding="utf-8")
+        _append_update_log(f"更新助手已启动，等待旧进程 {old_pid} 退出")
+        if not _wait_for_windows_pid(old_pid):
+            raise AppUpdateError("旧版程序在三分钟内没有退出。")
+        if _sha256(source).lower() != expected_digest:
+            raise AppUpdateError("更新助手自身校验失败。")
+
+        for stale in (health, backup, pending):
+            try:
+                stale.unlink()
+            except FileNotFoundError:
+                pass
+        os.replace(target, backup)
+        target_backed_up = True
+        shutil.copy2(source, pending)
+        if _sha256(pending).lower() != expected_digest:
+            raise AppUpdateError("新版程序复制后校验失败。")
+        os.replace(pending, target)
+
+        child_env = dict(os.environ)
+        child_env["DONCOLLEGE_UPDATE_HEALTH_MARKER"] = str(health)
+        new_process = subprocess.Popen([str(target)], close_fds=True, env=child_env)
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            if health.is_file():
+                break
+            if new_process.poll() is not None:
+                raise AppUpdateError("新版程序启动后提前退出。")
+            time.sleep(0.5)
+        else:
+            raise AppUpdateError("新版程序未在规定时间内完成启动确认。")
+
+        backup.unlink()
+        target_backed_up = False
+        _append_update_log(f"更新成功：v{APP_VERSION}")
+        return 0
+    except (AppUpdateError, OSError, ValueError) as exc:
+        _append_update_log(f"更新失败：{exc}")
+        if new_process is not None and new_process.poll() is None:
+            try:
+                new_process.terminate()
+                new_process.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        try:
+            pending.unlink()
+        except OSError:
+            pass
+        if target_backed_up and backup.is_file():
+            try:
+                target.unlink(missing_ok=True)
+                os.replace(backup, target)
+                rollback_env = dict(os.environ)
+                rollback_env.pop("DONCOLLEGE_UPDATE_HEALTH_MARKER", None)
+                subprocess.Popen([str(target)], close_fds=True, env=rollback_env)
+                _append_update_log("已恢复并重新启动旧版程序")
+            except OSError as rollback_error:
+                _append_update_log(f"旧版恢复失败：{rollback_error}")
+        elif target.is_file():
+            try:
+                restart_env = dict(os.environ)
+                restart_env.pop("DONCOLLEGE_UPDATE_HEALTH_MARKER", None)
+                subprocess.Popen([str(target)], close_fds=True, env=restart_env)
+                _append_update_log("替换前失败，已重新启动旧版程序")
+            except OSError as restart_error:
+                _append_update_log(f"旧版重新启动失败：{restart_error}")
+        return 1
+    finally:
+        for marker in (health, ready):
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+
 def launch_windows_replacement(new_exe_path: str, expected_sha256: str) -> dict:
-    """Start a detached updater and exit the frozen application shortly after."""
+    """Start the verified new EXE as an updater, confirm it, then exit."""
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return {"success": False, "error": "在线替换只能在已安装的 Windows 程序中执行。"}
     try:
@@ -366,113 +593,45 @@ def launch_windows_replacement(new_exe_path: str, expected_sha256: str) -> dict:
         if source_dir.parent != update_root:
             raise AppUpdateError("更新文件不在受控临时目录中，已停止替换。")
 
-        backup = target.with_suffix(target.suffix + ".update-backup")
         pid = os.getpid()
-        script = update_root / f"apply-update-{pid}-{expected_digest[:12]}.ps1"
-        marker = update_root / f"healthy-{pid}-{expected_digest[:12]}.txt"
-        content = f"""$ErrorActionPreference = 'Stop'
-$source = {_powershell_literal(str(source))}
-$sourceDir = {_powershell_literal(str(source_dir))}
-$updateRoot = {_powershell_literal(str(update_root))}
-$target = {_powershell_literal(str(target))}
-$backup = {_powershell_literal(str(backup))}
-$marker = {_powershell_literal(str(marker))}
-$expectedHash = {_powershell_literal(expected_digest)}
-$scriptPath = $MyInvocation.MyCommand.Path
-$oldPid = {pid}
-$newProcess = $null
-$targetBackedUp = $false
-$exitCode = 0
-
-try {{
-    $actualParent = [IO.Path]::GetFullPath((Split-Path -Parent $sourceDir)).TrimEnd('\\')
-    $expectedParent = [IO.Path]::GetFullPath($updateRoot).TrimEnd('\\')
-    if ($actualParent -ne $expectedParent) {{
-        throw 'Unsafe update source directory.'
-    }}
-
-    Wait-Process -Id $oldPid -ErrorAction SilentlyContinue
-    $actualHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $expectedHash) {{
-        throw 'The staged update failed SHA-256 verification.'
-    }}
-    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $target -Destination $backup -Force
-    $targetBackedUp = $true
-    Move-Item -LiteralPath $source -Destination $target -Force
-
-    $env:DONCOLLEGE_UPDATE_HEALTH_MARKER = $marker
-    $newProcess = Start-Process -FilePath $target -PassThru
-    $deadline = [DateTime]::UtcNow.AddSeconds(60)
-    $healthy = $false
-    while ([DateTime]::UtcNow -lt $deadline) {{
-        if (Test-Path -LiteralPath $marker) {{
-            $healthy = $true
-            break
-        }}
-        $newProcess.Refresh()
-        if ($newProcess.HasExited) {{ break }}
-        Start-Sleep -Milliseconds 500
-    }}
-    if (-not $healthy) {{ throw 'The updated application did not report healthy startup.' }}
-    Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
-}}
-catch {{
-    $exitCode = 1
-    if ($newProcess -and -not $newProcess.HasExited) {{
-        Stop-Process -Id $newProcess.Id -Force -ErrorAction SilentlyContinue
-        Wait-Process -Id $newProcess.Id -ErrorAction SilentlyContinue
-    }}
-    if ($targetBackedUp) {{
-        Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
-    }}
-    if ($targetBackedUp -and (Test-Path -LiteralPath $backup)) {{
-        Move-Item -LiteralPath $backup -Destination $target -Force
-        Start-Process -FilePath $target
-    }}
-}}
-finally {{
-    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-    $actualParent = [IO.Path]::GetFullPath((Split-Path -Parent $sourceDir)).TrimEnd('\\')
-    $expectedParent = [IO.Path]::GetFullPath($updateRoot).TrimEnd('\\')
-    if ($actualParent -eq $expectedParent) {{
-        Remove-Item -LiteralPath $sourceDir -Recurse -Force -ErrorAction SilentlyContinue
-    }}
-}}
-
-Start-Sleep -Milliseconds 500
-Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue
-exit $exitCode
-"""
-        with script.open("w", encoding="utf-8-sig", newline="\r\n") as stream:
-            stream.write(content)
+        ready = update_root / f"helper-ready-{pid}-{expected_digest[:12]}.txt"
+        ready.unlink(missing_ok=True)
         creationflags = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
             | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         )
-        subprocess.Popen(
+        helper = subprocess.Popen(
             [
-                os.path.join(
-                    os.environ.get("SystemRoot", r"C:\Windows"),
-                    "System32",
-                    "WindowsPowerShell",
-                    "v1.0",
-                    "powershell.exe",
-                ),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script),
+                str(source),
+                UPDATE_HELPER_FLAG,
+                str(target),
+                str(pid),
+                expected_digest,
+                str(ready),
             ],
             close_fds=True,
             creationflags=creationflags,
         )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if ready.is_file():
+                break
+            if helper.poll() is not None:
+                raise AppUpdateError(
+                    f"更新助手启动失败，请查看 {UPDATE_RESULT_LOG}。"
+                )
+            time.sleep(0.1)
+        else:
+            try:
+                helper.terminate()
+            except OSError:
+                pass
+            raise AppUpdateError("更新助手未能启动，当前程序不会退出。")
         threading.Timer(0.8, lambda: os._exit(0)).start()
-        return {"success": True, "restarting": True}
+        return {
+            "success": True,
+            "restarting": True,
+            "log_path": str(UPDATE_RESULT_LOG),
+        }
     except (AppUpdateError, OSError, ValueError) as exc:
         return {"success": False, "error": str(exc)}
