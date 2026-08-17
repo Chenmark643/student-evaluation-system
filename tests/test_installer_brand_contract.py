@@ -17,7 +17,7 @@ class InstallerBrandContractTests(unittest.TestCase):
         installer = (ROOT / "installer" / "installer.py").read_text(encoding="utf-8")
         full = (ROOT / "installer" / "build_installer_full.spec").read_text(encoding="utf-8")
         lite = (ROOT / "installer" / "build_installer_lite.spec").read_text(encoding="utf-8")
-        self.assertIn("VERSION = '14.1.0'", installer)
+        self.assertIn("VERSION = '14.1.1'", installer)
         self.assertIn("MicrosoftEdgeWebView2RuntimeInstallerX64.exe", full)
         self.assertNotIn("MicrosoftEdgeWebView2RuntimeInstallerX64.exe", lite)
         self.assertIn("os.path.join(PROJECT_ROOT, 'dist')", full)

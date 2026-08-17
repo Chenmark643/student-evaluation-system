@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""v14.1.0 full installer: application + VC++ + offline WebView2 runtime."""
+"""v14.1.1 full installer: application + VC++ + offline WebView2 runtime."""
 import os
 
 SPEC_DIR = SPECPATH
@@ -33,7 +33,7 @@ a = Analysis(
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
-    name='DonCollege-Setup-v14.1.0-Full-WebView2',
+    name='DonCollege-Setup-v14.1.1-Full-WebView2',
     icon=os.path.join(SPEC_DIR, 'assets', 'installer-icon-hd.ico'),
     debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
     console=False, disable_windowed_traceback=False,

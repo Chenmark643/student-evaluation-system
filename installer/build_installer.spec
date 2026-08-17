@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec for packaging the installer + app into setup.exe
-Output: installer\Output\DonCollege-Setup-v14.1.0-Full-WebView2.exe
+Output: installer\Output\DonCollege-Setup-v14.1.1-Full-WebView2.exe
 """
 
 import sys
@@ -69,7 +69,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='DonCollege-Setup-v14.1.0-Full-WebView2',
+    name='DonCollege-Setup-v14.1.1-Full-WebView2',
     icon=os.path.join(PROJECT_ROOT, 'installer', 'assets', 'installer-icon-hd.ico'),
     debug=False,
     bootloader_ignore_signals=False,

@@ -19,7 +19,7 @@ APP_NAME = '顿河学院学生测评管理软件'
 APP_EXE = 'DonCollege-Student-Evaluation.exe'
 DEFAULT_DIR = os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~')),
                            APP_NAME)
-VERSION = '14.1.0'
+VERSION = '14.1.1'
 
 # ── Fonts ──────────────────────────────────────────────────────────────
 # Use system default fonts for maximum compatibility with Chinese text.
