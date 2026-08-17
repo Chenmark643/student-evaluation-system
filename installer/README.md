@@ -1,86 +1,59 @@
-# 制作安装程序 — 分步指南
+# 制作 Windows 安装程序
 
-## 准备工作（只需做一次）
+当前发布同时提供两种安装包：
 
-### 安装 Inno Setup
+- `DonCollege-Setup-v14.1.2-Lite-NoWebView2.exe`：轻量版，使用电脑中已有的 WebView2。
+- `DonCollege-Setup-v14.1.2-Full-WebView2.exe`：完整离线版，内置 WebView2 运行库。
 
-方式一（推荐）：命令行安装
-```bash
-winget install InnoSetup
+两种安装包都包含主程序、VC++ 运行库、默认数据和三份 PDF 使用教程。安装器会检查 Windows 版本、WebView2、系统 DLL 和磁盘空间；重复安装时保留应用数据目录中的用户数据。
+
+## 准备文件
+
+先在项目根目录构建主程序：
+
+```powershell
+.\venv38\Scripts\python.exe -m PyInstaller --clean --noconfirm build.spec
 ```
 
-方式二：官网下载
-1. 打开 https://jrsoftware.org/isdl.php
-2. 下载 `innosetup-6.X.X.exe`
-3. 双击安装，一路下一步
+随后确认这些文件存在：
 
----
-
-## 制作安装包
-
-### 步骤 1：确认文件就绪
-
-确保 `dist` 目录下有这些文件：
-```
-dist/
-  ├── 顿河学院学生测评管理软件.exe    ← 主程序（必须）
-  ├── data/                            ← 数据目录（必须）
-  ├── 秘书处使用教程.pdf               ← 使用教程（可选）
-  ├── 辅导员使用教程.pdf               ← 使用教程（可选）
-  └── 软件更新方法.pdf                 ← 使用教程（可选）
+```text
+dist/DonCollege-Student-Evaluation.exe
+dist/学分绩点操作教程(1).pdf
+dist/德育分操作教程(2).pdf
+dist/素质拓展分操作教程(1).pdf
+data/activity_mappings.json
+data/custom_thresholds.json
+installer/vc_redist.x64.exe
+installer/MicrosoftEdgeWebView2RuntimeInstallerX64.exe   # 仅完整离线版需要
 ```
 
-如缺少 PDF 文件，编辑 `installer\setup.iss`，删掉或注释掉对应的 [Files] 和 [Icons] 行。
+## 构建安装包
 
-### 步骤 2：编译安装包
+轻量版：
 
-**方法 A：右键编译（最简单）**
-1. 找到 `installer\setup.iss`
-2. 右键 → **Compile**（安装 Inno Setup 后会出现在右键菜单）
-3. 等待绿色进度条走完
-
-**方法 B：拖入编译器**
-1. 打开 Inno Setup Compiler（开始菜单搜 "Inno Setup"）
-2. 把 `installer\setup.iss` 拖入窗口
-3. 点击工具栏绿色 ▶ 按钮（Compile）
-
-### 步骤 3：获取安装包
-
-编译完成后，`installer\Output\` 目录下会生成：
-```
-顿河学院学生测评管理软件_Setup_v8.0.0.exe
+```powershell
+.\venv38\Scripts\python.exe -m PyInstaller --clean --noconfirm installer/build_installer_lite.spec
 ```
 
-这个就是可以分发给用户的安装包。
+完整离线版：
 
----
-
-## 安装包功能
-
-用户双击安装包后会看到标准的安装向导：
-
-| 步骤 | 界面 | 说明 |
-|------|------|------|
-| 1 | 语言选择 | 中文 / English |
-| 2 | 欢迎页 | 软件名称和版本 |
-| 3 | 安装位置 | 默认 `%LOCALAPPDATA%\顿河学院学生测评管理软件` |
-| 4 | 快捷方式 | 桌面快捷方式、开始菜单文件夹 |
-| 5 | 准备安装 | 确认所有设置 |
-| 6 | 安装进度 | 复制文件 |
-| 7 | 完成 | 勾选"启动软件"→ 完成 |
-
-安装后自动创建：
-- ✅ 桌面快捷方式
-- ✅ 开始菜单 → 顿河学院学生测评管理软件（含教程和卸载）
-- ✅ 控制面板 → 程序和功能 → 可正常卸载
-- ✅ 检测旧版本，提示先卸载再安装
-- ✅ 安装完成后自动检测浏览器，没装的话会提示下载
-
----
-
-## 更新版本号
-
-新版本发布时，改 `setup.iss` 第 12 行：
+```powershell
+.\venv38\Scripts\python.exe -m PyInstaller --clean --noconfirm installer/build_installer_full.spec
 ```
-#define MyAppVersion "8.0.0"    ← 发布新版本时同步修改
-```
+
+产物位于 `dist/`。构建后应分别启动两个安装包做冒烟测试，并确认版本、安装目录、环境检查、快捷方式与主程序启动正常。
+
+## 发布新版本
+
+发布前必须让以下位置保持同一版本号：
+
+- `config.py`
+- `installer/installer.py`
+- `installer/setup.iss`
+- `installer/build_installer.spec`
+- `installer/build_installer_lite.spec`
+- `installer/build_installer_full.spec`
+- `.github/workflows/build-windows.yml`
+
+版本一致性由 `tests/test_installer_brand_contract.py` 检查。在线更新 Release 的发布步骤见 [程序在线更新发布说明](../docs/在线更新发布说明.md)。

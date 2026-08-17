@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import os
 import re
+import zipfile
 from collections import defaultdict
 
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 
-from backend.utils.class_utils import group_by_program_grade
+from backend.utils.class_utils import filter_students_by_exact_program, group_by_program_grade
 from backend.utils.rank_calculator import calculate_ranking
 from backend.utils.excel_writer import unique_path
 from backend.utils.progress_reporter import ProgressReporter
@@ -28,6 +29,13 @@ _CLASS_HEADERS = ('班级', '行政班级', '学生行政班级', '班别')
 _GPA_HEADERS = ('学分绩点', '平均学分绩点', '平均学分绩', '绩点', '成绩')
 _CREDIT_HEADERS = ('总学分', '获得学分', '所得学分', '学分合计')
 _COMP_HEADERS = ('综合测评', '综测', '综合测评分', '综测分')
+_MAX_XLSX_BYTES = 128 * 1024 * 1024
+_MAX_XLSX_UNCOMPRESSED_BYTES = 1024 * 1024 * 1024
+_MAX_XLSX_COMPRESSION_RATIO = 2000
+_MAX_WORKSHEETS = 128
+_MAX_ROWS_PER_SHEET = 200_000
+_MAX_COLUMNS_PER_SHEET = 512
+_MAX_CELLS = 5_000_000
 
 
 def process_annual_gpa(
@@ -35,12 +43,13 @@ def process_annual_gpa(
     semester2_path: str,
     output_dir: str,
     academic_year: str = '',
+    major_filter: str = '',
     progress: ProgressReporter | None = None,
 ) -> dict:
     """Merge two semester GPA workbooks and create class/program rankings."""
     return _process_annual(
         'gpa', semester1_path, semester2_path, output_dir,
-        academic_year=academic_year, progress=progress,
+        academic_year=academic_year, major_filter=major_filter, progress=progress,
     )
 
 
@@ -49,18 +58,20 @@ def process_annual_comprehensive(
     semester2_path: str,
     output_dir: str,
     academic_year: str = '',
+    major_filter: str = '',
     progress: ProgressReporter | None = None,
 ) -> dict:
     """Merge two semester comprehensive workbooks and create two rankings."""
     return _process_annual(
         'comprehensive', semester1_path, semester2_path, output_dir,
-        academic_year=academic_year, progress=progress,
+        academic_year=academic_year, major_filter=major_filter, progress=progress,
     )
 
 
 def _process_annual(kind: str, semester1_path: str, semester2_path: str,
-                    output_dir: str, academic_year: str = '',
-                    progress: ProgressReporter | None = None) -> dict:
+                     output_dir: str, academic_year: str = '',
+                     major_filter: str = '',
+                     progress: ProgressReporter | None = None) -> dict:
     progress = progress or ProgressReporter()
     _validate_inputs(semester1_path, semester2_path, output_dir)
     year = _normalise_academic_year(academic_year, semester1_path, semester2_path)
@@ -77,6 +88,16 @@ def _process_annual(kind: str, semester1_path: str, semester2_path: str,
     students, diagnostics = _merge_semesters(first, second, kind)
     if not students:
         raise ValueError(f'没有可用于学年{score_label}排名的学生')
+    if str(major_filter or '').strip():
+        students = filter_students_by_exact_program(students, major_filter)
+        if not students:
+            raise ValueError(
+                f'当前专业“{major_filter}”在两学期文件中没有匹配学生；'
+                '班级应采用“顿河信241”这类完整名称，请检查专业设置与班级列'
+            )
+        diagnostics = _merge_diagnostics(
+            first, second, kind, {student['学号'] for student in students},
+        )
 
     class_groups = defaultdict(list)
     for student in students:
@@ -117,6 +138,7 @@ def _process_annual(kind: str, semester1_path: str, semester2_path: str,
         'credit_weighted_count': diagnostics['credit_weighted_count'],
         'mean_fallback_count': diagnostics['mean_fallback_count'],
         'class_mismatch_count': diagnostics['class_mismatch_count'],
+        'major_filter': str(major_filter or '').strip(),
         'output1': class_path,
         'output2': program_path,
     }
@@ -185,9 +207,49 @@ def _number(value) -> float | None:
     return number if number == number else None
 
 
+def _safe_excel_text(value) -> str:
+    """Keep workbook-sourced text from being interpreted as a formula."""
+    text = str(value or '')
+    return "'" + text if text.startswith(('=', '+', '-', '@')) else text
+
+
+def _validate_workbook_archive(path: str) -> None:
+    if os.path.getsize(path) > _MAX_XLSX_BYTES:
+        raise ValueError('Excel 文件过大，已停止处理')
+    try:
+        with zipfile.ZipFile(path) as archive:
+            total = 0
+            for info in archive.infolist():
+                total += info.file_size
+                if total > _MAX_XLSX_UNCOMPRESSED_BYTES:
+                    raise ValueError('Excel 文件解压规模超限，已停止处理')
+                if info.file_size and (
+                    not info.compress_size
+                    or info.file_size / info.compress_size > _MAX_XLSX_COMPRESSION_RATIO
+                ):
+                    raise ValueError('Excel 文件压缩比例异常，已停止处理')
+    except zipfile.BadZipFile as exc:
+        raise ValueError('Excel 文件损坏或格式不正确') from exc
+
+
+def _validate_workbook_shape(workbook) -> None:
+    if len(workbook.worksheets) > _MAX_WORKSHEETS:
+        raise ValueError('Excel 工作表数量超限，已停止处理')
+    total_cells = 0
+    for ws in workbook.worksheets:
+        rows, columns = int(ws.max_row or 0), int(ws.max_column or 0)
+        if rows > _MAX_ROWS_PER_SHEET or columns > _MAX_COLUMNS_PER_SHEET:
+            raise ValueError(f'工作表“{ws.title}”规模超限，已停止处理')
+        total_cells += rows * columns
+        if total_cells > _MAX_CELLS:
+            raise ValueError('Excel 单元格总量超限，已停止处理')
+
+
 def _find_header(ws, score_aliases: tuple[str, ...]) -> tuple[int, list] | None:
-    for row_number in range(1, min(ws.max_row, 12) + 1):
-        headers = [ws.cell(row_number, col).value for col in range(1, ws.max_column + 1)]
+    for row_number, values in enumerate(
+        ws.iter_rows(min_row=1, max_row=min(ws.max_row, 12), values_only=True), 1
+    ):
+        headers = list(values)
         has_identity = _header_index(headers, _ID_HEADERS) is not None
         has_score = _header_index(headers, score_aliases) is not None
         if has_identity and has_score:
@@ -208,15 +270,17 @@ def _read_values_index(workbook, score_aliases: tuple[str, ...]) -> dict:
     class_col = _header_index(headers, _CLASS_HEADERS)
     score_col = _header_index(headers, score_aliases)
     result = {}
-    for row in range(header_row + 1, ws.max_row + 1):
-        sid = _clean_student_id(ws.cell(row, id_col + 1).value)
+    for values in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        sid = _clean_student_id(values[id_col] if id_col < len(values) else None)
         if not sid:
             continue
         result[sid] = {
             'id': sid,
-            'name': str(ws.cell(row, name_col + 1).value or '').strip() if name_col is not None else '',
-            'class': str(ws.cell(row, class_col + 1).value or '').strip() if class_col is not None else '',
-            'score': _number(ws.cell(row, score_col + 1).value),
+            'name': str(values[name_col] or '').strip()
+                    if name_col is not None and name_col < len(values) else '',
+            'class': str(values[class_col] or '').strip()
+                     if class_col is not None and class_col < len(values) else '',
+            'score': _number(values[score_col] if score_col < len(values) else None),
             'credits': None,
         }
     return result
@@ -224,7 +288,13 @@ def _read_values_index(workbook, score_aliases: tuple[str, ...]) -> dict:
 
 def _extract_semester_records(path: str, kind: str) -> dict:
     score_aliases = _GPA_HEADERS if kind == 'gpa' else _COMP_HEADERS
+    _validate_workbook_archive(path)
     workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    try:
+        _validate_workbook_shape(workbook)
+    except Exception:
+        workbook.close()
+        raise
     values_index = _read_values_index(workbook, score_aliases)
     records = {}
 
@@ -240,21 +310,23 @@ def _extract_semester_records(path: str, kind: str) -> dict:
         class_col = _header_index(headers, _CLASS_HEADERS)
         score_col = _header_index(headers, score_aliases)
         credit_col = _header_index(headers, _CREDIT_HEADERS) if kind == 'gpa' else None
-        for row in range(header_row + 1, ws.max_row + 1):
-            sid = _clean_student_id(ws.cell(row, id_col + 1).value)
+        for values in ws.iter_rows(min_row=header_row + 1, values_only=True):
+            sid = _clean_student_id(values[id_col] if id_col < len(values) else None)
             if not sid:
                 continue
             cached = values_index.get(sid, {})
-            score = _number(ws.cell(row, score_col + 1).value)
+            score = _number(values[score_col] if score_col < len(values) else None)
             if score is None:
                 score = cached.get('score')
             if score is None:
                 continue
-            explicit_class = str(ws.cell(row, class_col + 1).value or '').strip() if class_col is not None else ''
+            explicit_class = (str(values[class_col] or '').strip()
+                              if class_col is not None and class_col < len(values) else '')
             class_name = explicit_class or cached.get('class') or ws.title
-            name = (str(ws.cell(row, name_col + 1).value or '').strip()
-                    if name_col is not None else '') or cached.get('name', '')
-            credits = _number(ws.cell(row, credit_col + 1).value) if credit_col is not None else None
+            name = (str(values[name_col] or '').strip()
+                    if name_col is not None and name_col < len(values) else '') or cached.get('name', '')
+            credits = (_number(values[credit_col] if credit_col < len(values) else None)
+                       if credit_col is not None else None)
             candidate = {'id': sid, 'name': name, 'class': class_name,
                          'score': score, 'credits': credits}
             existing = records.get(sid)
@@ -268,35 +340,44 @@ def _extract_semester_records(path: str, kind: str) -> dict:
     return records
 
 
-def _merge_semesters(first: dict, second: dict, kind: str) -> tuple[list, dict]:
+def _merge_diagnostics(first: dict, second: dict, kind: str,
+                       student_ids: set[str]) -> dict:
     diagnostics = {
         'matched_count': 0, 'first_only_count': 0, 'second_only_count': 0,
         'credit_weighted_count': 0, 'mean_fallback_count': 0,
         'class_mismatch_count': 0,
     }
-    merged = []
-    for sid in sorted(set(first) | set(second)):
+    for sid in student_ids:
         one, two = first.get(sid), second.get(sid)
         if one and two:
             diagnostics['matched_count'] += 1
         elif one:
             diagnostics['first_only_count'] += 1
-        else:
+        elif two:
             diagnostics['second_only_count'] += 1
         if one and two and one.get('class') and two.get('class') and one['class'] != two['class']:
             diagnostics['class_mismatch_count'] += 1
+        available = [item for item in (one, two) if item and item.get('score') is not None]
+        if kind == 'gpa' and len(available) == 2:
+            if all((item.get('credits') or 0) > 0 for item in available):
+                diagnostics['credit_weighted_count'] += 1
+            else:
+                diagnostics['mean_fallback_count'] += 1
+    return diagnostics
 
+
+def _merge_semesters(first: dict, second: dict, kind: str) -> tuple[list, dict]:
+    merged = []
+    for sid in sorted(set(first) | set(second)):
+        one, two = first.get(sid), second.get(sid)
         available = [item for item in (one, two) if item and item.get('score') is not None]
         if not available:
             continue
         if kind == 'gpa' and len(available) == 2 and all((item.get('credits') or 0) > 0 for item in available):
             total_credits = sum(item['credits'] for item in available)
             score = sum(item['score'] * item['credits'] for item in available) / total_credits
-            diagnostics['credit_weighted_count'] += 1
         else:
             score = sum(item['score'] for item in available) / len(available)
-            if kind == 'gpa' and len(available) == 2:
-                diagnostics['mean_fallback_count'] += 1
 
         latest = two or one
         earlier = one or two
@@ -309,7 +390,7 @@ def _merge_semesters(first: dict, second: dict, kind: str) -> tuple[list, dict]:
             'class_name': class_name,
             ('学分绩点' if kind == 'gpa' else '综合测评'): round(score, 2),
         })
-    return merged, diagnostics
+    return merged, _merge_diagnostics(first, second, kind, set(first) | set(second))
 
 
 def _rank_groups(groups: dict, score_label: str) -> dict:
@@ -321,8 +402,7 @@ def _rank_groups(groups: dict, score_label: str) -> dict:
 
 
 def _short_class_sheet_name(class_name: str) -> str:
-    short = re.sub(r'^(顿河|国)(?=[^\d])', '', str(class_name))
-    return short or str(class_name)
+    return str(class_name or '未识别班级').strip()
 
 
 def _safe_sheet_name(value: str, used: set[str]) -> str:
@@ -367,8 +447,8 @@ def _write_ranking_workbook(path: str, groups: dict, kind: str, scope: str) -> N
         for row_index, student in enumerate(students, 2):
             values = {
                 '学号': student.get('学号', ''),
-                '班级': student.get('班级', ''),
-                '姓名': student.get('姓名', ''),
+                '班级': _safe_excel_text(student.get('班级', '')),
+                '姓名': _safe_excel_text(student.get('姓名', '')),
                 score_key: student.get(score_key, 0),
                 rank_header: student.get('排名', 0),
                 percentage_header: student.get('百分比', 0),

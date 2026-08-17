@@ -13,61 +13,67 @@ function renderModuleComprehensive() {
     document.getElementById('module-title').textContent = '综合测评计算';
     const c = document.getElementById('module-container');
     c.innerHTML = `
-        <div class="module-section">
-            <h2><span class="step-badge">1</span> 选择上游输出文件并配置列映射</h2>
-            <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px;">
-                每个文件选择后可点击「映射」按钮预览表格结构并指定列对应关系
-            </p>
-            ${_compFileMapped('comp-gpa', '📊 学分绩点表', '学分绩点.xlsx')}
-            ${_compFileMapped('comp-moral', '📋 德育分表', '德育分.xlsx')}
-            ${_compFileMapped('comp-quality', '⭐ 素拓分表', '素拓分.xlsx')}
-        </div>
+        <div class="comp-workspace">
+            <section class="comp-hero">
+                <div class="comp-hero-copy">
+                    <span class="comp-kicker">SEMESTER EVALUATION LEDGER</span>
+                    <h2>把三份上游结果，汇成一份可复核的综合测评</h2>
+                    <p>依次核对绩点、德育与素拓来源，确认体育成绩口径后，一次生成综测总表与排名表。</p>
+                </div>
+                <div class="comp-ledger-mark" aria-label="综测计算组成">
+                    <small>计算主线</small><strong>绩点 · 德育 · 素拓</strong><span>两份结果表</span>
+                </div>
+            </section>
 
-        <div class="module-section">
-            <h2><span class="step-badge">2</span> 输出目录</h2>
-            <div class="file-picker-row">
-                <input id="comp-output-dir" class="file-path" readonly placeholder="选择输出目录...">
-                <button class="btn btn-secondary" onclick="pickDirectory('comp-output-dir','选择输出目录')">浏览</button>
-            </div>
-            <div id="comp-grade-filter" style="margin-top:8px;"></div>
-        </div>
+            <section class="comp-panel comp-source-panel">
+                <header><div><span>STEP 01 · SOURCE FILES</span><h3>核对三份上游结果</h3></div><p>每份文件都需要完成检查与列映射</p></header>
+                <div class="comp-file-grid">
+                    ${_compFileMapped('comp-gpa', '01', '学分绩点表', '学分绩点.xlsx', '用于学业成绩权重')}
+                    ${_compFileMapped('comp-moral', '02', '德育分表', '德育分.xlsx', '用于德育成绩权重')}
+                    ${_compFileMapped('comp-quality', '03', '素拓分表', '素拓分.xlsx', '作为素质拓展加分')}
+                </div>
+            </section>
 
-        <div class="module-section">
-            <h2><span class="step-badge">3</span> 体育成绩设置</h2>
-            <div class="options-row" style="flex-direction:column;align-items:flex-start;gap:12px;">
-                <label class="toggle-label">
-                    <input type="radio" name="comp-sports-mode" value="auto" checked onchange="compSportsMode()">
-                    自动检测 — 程序自动判断每个年级是否有体育成绩
-                </label>
-                <label class="toggle-label">
-                    <input type="radio" name="comp-sports-mode" value="all" onchange="compSportsMode()">
-                    全部有体育 — 所有年级使用有体育公式
-                </label>
-                <label class="toggle-label">
-                    <input type="radio" name="comp-sports-mode" value="none" onchange="compSportsMode()">
-                    全部无体育 — 所有年级使用无体育公式
-                </label>
-                <label class="toggle-label">
-                    <input type="radio" name="comp-sports-mode" value="custom" onchange="compSportsMode()">
-                    自定义 — 指定有体育的年级
-                </label>
-            </div>
-            <div id="comp-custom-grades" style="display:none;margin-top:8px;">
-                <input id="comp-sports-grades" class="input" style="width:300px;"
-                       placeholder="输入年级，逗号分隔，如: 24,25（表示24级和25级有体育）">
-            </div>
-            <div style="margin-top:12px;padding:12px;background:var(--bg-tertiary);border-radius:var(--radius-md);font-size:13px;color:var(--text-secondary);">
-                <p><strong>有体育:</strong> 综测 = 绩点×0.6 + 德育×0.3 + 体育×0.1 + 素拓</p>
-                <p><strong>无体育:</strong> 综测 = 绩点×0.7 + 德育×0.3 + 素拓</p>
-            </div>
-        </div>
+            <div class="comp-settings-grid">
+                <section class="comp-panel comp-output-panel">
+                    <header><div><span>STEP 02 · OUTPUT</span><h3>设置保存位置</h3></div><p>生成综测表与排名表</p></header>
+                    <label class="comp-field-label" for="comp-output-dir">输出目录</label>
+                    <div class="file-picker-row comp-dir-row">
+                        <input id="comp-output-dir" class="file-path" readonly placeholder="选择保存两份结果表的文件夹">
+                        <button type="button" class="btn btn-secondary" onclick="pickDirectory('comp-output-dir','选择输出目录')">浏览</button>
+                    </div>
+                    <div id="comp-grade-filter" class="comp-grade-filter"></div>
+                    <div class="comp-deliverables"><span><b>I</b>综测总表</span><span><b>II</b>综测排名表</span></div>
+                </section>
 
-        <div id="comp-progress-area"></div>
-        <div class="actions-row">
-            <button class="btn btn-ghost" onclick="resetModuleComp()">重置</button>
-            <button class="btn btn-primary" id="comp-process-btn" onclick="processComp()">开始计算</button>
+                <section class="comp-panel comp-sports-panel">
+                    <header><div><span>STEP 03 · SCORING RULE</span><h3>确认体育成绩口径</h3></div><p>默认按年级自动检测</p></header>
+                    <div class="comp-sports-options" role="radiogroup" aria-label="体育成绩设置">
+                        ${_compSportsOption('auto', '自动检测', '逐个年级判断是否存在体育成绩', true)}
+                        ${_compSportsOption('all', '全部有体育', '所有年级使用含体育公式')}
+                        ${_compSportsOption('none', '全部无体育', '所有年级使用无体育公式')}
+                        ${_compSportsOption('custom', '指定年级', '仅指定年级计入体育成绩')}
+                    </div>
+                    <div id="comp-custom-grades" class="comp-custom-grades" hidden>
+                        <label for="comp-sports-grades">有体育成绩的年级</label>
+                        <input id="comp-sports-grades" class="input" placeholder="例如：24, 25">
+                    </div>
+                </section>
+            </div>
+
+            <section class="comp-formula-band" aria-label="综合测评计算公式">
+                <div><span>有体育</span><strong>绩点 × 0.6 ＋ 德育 × 0.3 ＋ 体育 × 0.1 ＋ 素拓</strong></div>
+                <i></i>
+                <div><span>无体育</span><strong>绩点 × 0.7 ＋ 德育 × 0.3 ＋ 素拓</strong></div>
+            </section>
+
+            <div id="comp-progress-area"></div>
+            <div class="comp-actionbar">
+                <div><span>READY TO CALCULATE</span><strong>检查三份来源和保存位置后开始生成</strong></div>
+                <div><button type="button" class="btn btn-ghost" onclick="resetModuleComp()">重置本页</button><button type="button" class="btn btn-primary" id="comp-process-btn" onclick="processComp()">生成综测与排名表 →</button></div>
+            </div>
+            <div id="comp-result-area"></div>
         </div>
-        <div id="comp-result-area"></div>
     `;
     const finishedMoral = CompletionCelebration.state().moral?.detail || '';
     if (finishedMoral && CompletionCelebration.state().moral?.done) {
@@ -78,17 +84,21 @@ function renderModuleComprehensive() {
     }
 }
 
-function _compFileMapped(id, label, placeholder) {
-    return `<div style="margin-bottom:8px;">
-        <div class="file-picker-row" style="margin-bottom:4px;">
-            <span style="font-size:12px;color:var(--text-secondary);min-width:100px;">${label}</span>
-            <input id="${id}-file" class="file-path" readonly placeholder="${placeholder}...">
-            <button class="btn btn-secondary btn-sm" onclick="pickFile('${id}-file','选择${label.replace(/📊|📋|⭐/,'')}',[['Excel文件','*.xlsx']])">浏览</button>
-            <button class="btn btn-ghost btn-sm" style="color:var(--accent-secondary);"
-                    onclick="compOpenImportStudio('${id}')">检查与映射</button>
+function _compFileMapped(id, number, label, placeholder, description) {
+    return `<article class="comp-file-card">
+        <div class="comp-file-number">${number}</div>
+        <div class="comp-file-copy"><small>SOURCE WORKBOOK</small><h4>${label}</h4><p>${description}</p></div>
+        <input id="${id}-file" class="file-path" readonly aria-label="${label}文件路径" placeholder="${placeholder}...">
+        <div class="comp-file-actions">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="pickFile('${id}-file','选择${label}',[['Excel文件','*.xlsx']])">选择文件</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="compOpenImportStudio('${id}')">检查与映射</button>
         </div>
-        <div id="${id}-mapping-status" style="font-size:10px;color:var(--text-muted);margin-left:112px;"></div>
-    </div>`;
+        <div id="${id}-mapping-status" class="comp-mapping-status">等待选择文件</div>
+    </article>`;
+}
+
+function _compSportsOption(value, title, description, checked = false) {
+    return `<label><input type="radio" name="comp-sports-mode" value="${value}" ${checked ? 'checked' : ''} onchange="compSportsMode()"><span><strong>${title}</strong><small>${description}</small></span></label>`;
 }
 
 async function compOpenImportStudio(fileId) {
@@ -233,7 +243,8 @@ function compSaveColumnMapping(filepath, fileId) {
 // ============================================================
 function compSportsMode() {
     const mode = document.querySelector('input[name="comp-sports-mode"]:checked').value;
-    document.getElementById('comp-custom-grades').style.display = mode === 'custom' ? 'block' : 'none';
+    const custom = document.getElementById('comp-custom-grades');
+    custom.hidden = mode !== 'custom';
 }
 
 // ============================================================
@@ -274,6 +285,11 @@ function resetModuleComp() {
     document.getElementById('comp-result-area').innerHTML = '';
     const gf = document.getElementById('comp-grade-filter');
     if (gf) gf.innerHTML = '';
+}
+
+function openComprehensiveOutput(kind) {
+    const path = comprehensiveLastOutputs[kind];
+    if (path) eel.open_file_explorer(path)();
 }
 
 // ============================================================
@@ -326,24 +342,24 @@ async function processComp() {
         if (result.success) {
             comprehensiveLastOutputs = { main: result.output1, ranking: result.output2 };
             document.getElementById('comp-result-area').innerHTML = `
-                <div class="result-card">
-                    <div class="result-stat"><div class="stat-value">${result.student_count}</div><div class="stat-label">学生</div></div>
-                    <div class="result-stat"><div class="stat-value">${result.class_count}</div><div class="stat-label">班级</div></div>
-                    <div class="result-stat"><div class="stat-value">${result.program_count}</div><div class="stat-label">专业组</div></div>
-                    <div class="result-actions">
-                        <button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output1.replace(/\\/g,'\\\\')}')()">📂 综测表</button>
-                        <button class="btn btn-teal btn-sm" onclick="eel.open_file_explorer('${result.output2.replace(/\\/g,'\\\\')}')()">📂 排名表</button>
-                        <button data-cloud-sync-id="comprehensive-main" class="btn btn-primary btn-sm" onclick="CloudSync.request('comprehensive-main')">☁ 同步综测云表</button>
-                        <button data-cloud-sync-id="comprehensive-ranking" class="btn btn-primary btn-sm" onclick="CloudSync.request('comprehensive-ranking')">☁ 同步综测排名</button>
+                <section class="comp-result-card">
+                    <div class="comp-result-seal">完成</div>
+                    <div class="comp-result-copy"><span>SEMESTER RESULT · 已生成</span><h3>${result.student_count} 名学生已完成综合测评</h3><p>${result.class_count} 个班级 · ${result.program_count} 个专业组 · 共生成两份结果表</p></div>
+                    <div class="comp-result-stats"><span><b>${result.student_count}</b>学生</span><span><b>${result.class_count}</b>班级</span><span><b>${result.program_count}</b>专业组</span></div>
+                    <div class="comp-result-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="openComprehensiveOutput('main')">打开综测表</button>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="openComprehensiveOutput('ranking')">打开排名表</button>
+                        <button type="button" data-cloud-sync-id="comprehensive-main" class="btn btn-primary btn-sm" onclick="CloudSync.request('comprehensive-main')">同步综测云表</button>
+                        <button type="button" data-cloud-sync-id="comprehensive-ranking" class="btn btn-primary btn-sm" onclick="CloudSync.request('comprehensive-ranking')">同步综测排名</button>
                     </div>
-                </div>`;
+                </section>`;
             CompletionCelebration.mark('comprehensive', result.output1);
             showOutputDialog(true, `成功计算 ${result.student_count} 名学生的综测成绩`,
                 [result.output1, result.output2]);
         } else { showOutputDialog(false, result.error || '处理失败'); }
     } catch(e) { showOutputDialog(false, '处理出错: ' + e); }
     finally {
-        btn.disabled = false; btn.classList.remove('processing'); btn.textContent = '开始计算';
+        btn.disabled = false; btn.classList.remove('processing'); btn.textContent = '生成综测与排名表 →';
         window.removeEventListener('progress-update', onP);
     }
 }

@@ -73,8 +73,12 @@ function renderModuleAnnual() {
             <section class="annual-panel annual-output-panel">
                 <header><div><span>STEP 02 · OUTPUT</span><h3>设置学年与保存位置</h3></div><p>一次生成两份 Excel 表格</p></header>
                 <div class="annual-output-grid">
-                    <label><span>学年</span><input id="annual-year" class="input" value="${escapeHtml(annualState.year)}" placeholder="2024-2025"></label>
+                    <label><span>学年（可修改）</span><input id="annual-year" class="input" value="${escapeHtml(annualState.year)}" placeholder="2024-2025" aria-describedby="annual-year-hint"><small id="annual-year-hint" class="annual-year-hint">请填写连续学年，例如 2024-2025</small></label>
                     <label class="annual-dir-field"><span>输出目录</span><div><input id="annual-output-dir" class="file-path ${annualState.outputDir ? 'has-file' : ''}" readonly value="${escapeHtml(annualState.outputDir)}" placeholder="选择保存表格的文件夹"><button class="btn btn-secondary" onclick="pickDirectory('annual-output-dir','选择学年排名输出目录')">浏览</button></div></label>
+                </div>
+                <div class="annual-major-scope">
+                    <div><span>导出专业限制</span><strong data-major-scope-label>${escapeHtml(MajorScope.get() || '未设置专业')}</strong><small>仅保留班级名前缀严格匹配的学生；匹配人数为 0 时停止导出。</small></div>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="MajorScope.open()">设置专业</button>
                 </div>
                 <div class="annual-deliverables">
                     <span><b>A</b>${scoreName}班级排名百分比</span>
@@ -115,10 +119,12 @@ async function pickAnnualFile(key) {
 
 async function processAnnualRanking() {
     annualCaptureForm();
+    if (!MajorScope.requireForExport()) return;
     const files = annualState[annualState.mode];
     if (!files.first || !files.second) { showToast('请分别选择第一学期和第二学期文件', 'warning'); return; }
     if (files.first === files.second) { showToast('两个学期不能选择同一个文件', 'warning'); return; }
-    if (!/^20\d{2}-20\d{2}$/.test(annualState.year)) { showToast('学年格式应为 2024-2025', 'warning'); return; }
+    const yearMatch = annualState.year.match(/^(20\d{2})-(20\d{2})$/);
+    if (!yearMatch || Number(yearMatch[2]) !== Number(yearMatch[1]) + 1) { showToast('请填写连续学年，例如 2024-2025', 'warning'); return; }
     if (!annualState.outputDir) { showToast('请选择输出目录', 'warning'); return; }
 
     const button = document.getElementById('annual-process-btn');
@@ -130,7 +136,7 @@ async function processAnnualRanking() {
     window.addEventListener('progress-update', onProgress);
     try {
         const method = annualState.mode === 'gpa' ? eel.run_annual_gpa : eel.run_annual_comprehensive;
-        const result = await method(files.first, files.second, annualState.outputDir, annualState.year)();
+        const result = await method(files.first, files.second, annualState.outputDir, annualState.year, MajorScope.get())();
         if (!result?.success) throw new Error(result?.error || '学年排名生成失败');
         progress.done('两份学年表格已生成');
         annualState.outputs = [result.output1, result.output2];
