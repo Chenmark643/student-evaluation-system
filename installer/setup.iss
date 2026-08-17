@@ -10,7 +10,7 @@
 
 #define MyAppName "顿河学院学生测评管理软件"
 #define MyAppNameEn "Student Evaluation System"
-#define MyAppVersion "14.0.10"
+#define MyAppVersion "14.1.0"
 #define MyAppPublisher "顿河学院团委秘书处"
 #define MyAppURL "https://dunhe.edu.cn"
 #define MyAppExeName "DonCollege-Student-Evaluation.exe"

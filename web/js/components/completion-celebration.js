@@ -1,6 +1,6 @@
 (function () {
     const KEY = 'evaluation_task_completion_v1';
-    const names = {gpa:'学分绩点', moral:'德育分', quality:'素质拓展分', comprehensive:'综合测评'};
+    const names = {gpa:'学分绩点', moral:'德育分', quality:'素质拓展分', comprehensive:'综合测评', annual:'学年排名'};
     function activeTaskId() { return localStorage.getItem('eval_active_measurement_task') || 'default'; }
     function all() { try { return JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (_) { return {}; } }
     function state() { return all()[activeTaskId()] || {}; }

@@ -65,6 +65,7 @@ from backend.module_c_quality import (
     add_custom_category, remove_custom_category,
 )
 from backend.module_d_comprehensive import process_comprehensive
+from backend.module_e_annual import process_annual_comprehensive, process_annual_gpa
 from backend.utils.progress_reporter import ProgressReporter
 from backend.import_studio import (
     analyze_import_file as analyze_import_file_impl,
@@ -822,6 +823,32 @@ def run_module_d(gpa_path: str, moral_path: str,
 # ============================================================
 # V3.0: Semester Comparison
 # ============================================================
+@eel.expose
+def run_annual_gpa(semester1_path: str, semester2_path: str,
+                   output_dir: str, academic_year: str = '') -> dict:
+    """Build annual class and program GPA rankings from two semesters."""
+    try:
+        return process_annual_gpa(
+            semester1_path, semester2_path, output_dir,
+            academic_year=academic_year,
+        )
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
+@eel.expose
+def run_annual_comprehensive(semester1_path: str, semester2_path: str,
+                             output_dir: str, academic_year: str = '') -> dict:
+    """Build annual class and program comprehensive rankings."""
+    try:
+        return process_annual_comprehensive(
+            semester1_path, semester2_path, output_dir,
+            academic_year=academic_year,
+        )
+    except Exception as exc:
+        return {'success': False, 'error': str(exc)}
+
+
 @eel.expose
 def compare_semesters(file1: str, file2: str) -> dict:
     """Compare two semester comprehensive evaluation files."""

@@ -13,6 +13,7 @@
     <link rel="stylesheet" href="css/liquid-glass.css">
     <link rel="stylesheet" href="css/quality-material-workspace.css">
     <link rel="stylesheet" href="css/don-college-ui.css">
+    <link rel="stylesheet" href="css/annual.css">
     <script src="js/pywebview-shim.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
@@ -119,7 +120,7 @@
             </div>
             <button class="btn btn-primary welcome-start-btn" onclick="startWorking()">开始工作 · Начать работу · Start</button>
             <div class="welcome-hints" style="margin-top:24px;font-size:10px;color:var(--text-muted);opacity:0.5;">
-                💡 Ctrl+1~4 快速切换模块 · Ctrl+K 快捷键 · 拖拽文件到窗口快速导入
+                💡 Ctrl+1~5 快速切换模块 · Ctrl+K 快捷键 · 拖拽文件到窗口快速导入
             </div>
         </div>
     </div>
@@ -204,6 +205,11 @@
                         <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
                         <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
                     </svg><span>综测</span>
+                </button>
+                <button class="nav-btn" data-module="annual" title="学年绩点与综测排名汇总">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 5h16v15H4z"/><path d="M8 3v4m8-4v4M4 10h16"/><path d="m8 15 2 2 5-5"/>
+                    </svg><span>学年</span>
                 </button>
                 <button class="nav-btn" data-module="toolbox" title="荣誉资格核验台">
                     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16v13H4z"/><path d="M9 7V4h6v3M4 12h16M10 12v2h4v-2"/></svg><span>工具箱</span>
@@ -370,6 +376,7 @@
     <script src="js/modules/moral.js"></script>
     <script src="js/modules/quality.js"></script>
     <script src="js/modules/comprehensive.js"></script>
+    <script src="js/modules/annual.js"></script>
     <script src="js/modules/toolbox.js"></script>
     <script src="js/modules/cloud.js"></script>
     <script src="js/emoji-replace.js"></script>
