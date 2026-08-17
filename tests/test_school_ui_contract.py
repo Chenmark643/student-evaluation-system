@@ -7,6 +7,10 @@ INDEX = (ROOT / "web/index.html").read_text(encoding="utf-8")
 BRAND = ROOT / "web/css/don-college-ui.css"
 GLASS = ROOT / "web/css/liquid-glass.css"
 COMPLETION = ROOT / "web/js/components/completion-celebration.js"
+MAIN = ROOT / "web/js/main.js"
+COMPREHENSIVE = ROOT / "web/js/modules/comprehensive.js"
+ANNUAL_CSS = ROOT / "web/css/annual.css"
+ANNUAL = ROOT / "web/js/modules/annual.js"
 
 
 class SchoolUiContractTests(unittest.TestCase):
@@ -60,6 +64,35 @@ class SchoolUiContractTests(unittest.TestCase):
         self.assertIn("cubic-bezier(.16, 1, .3, 1)", css)
         self.assertIn("cubic-bezier(.34, 1.56, .64, 1)", css)
         self.assertIn("prefers-reduced-motion: reduce", css)
+
+    def test_workspace_navigation_includes_annual_renderer(self):
+        main = MAIN.read_text(encoding="utf-8")
+        switch_module = main.split("function switchModule(moduleName)", 1)[1].split("function initNavigation()", 1)[0]
+        self.assertIn("annual:'学年排名汇总'", switch_module)
+        self.assertIn("annual:renderModuleAnnual", switch_module)
+
+    def test_comprehensive_ledger_ui_preserves_processing_contract(self):
+        runtime = COMPREHENSIVE.read_text(encoding="utf-8")
+        css = ANNUAL_CSS.read_text(encoding="utf-8")
+        for marker in (
+            'class="comp-workspace"', 'class="comp-file-grid"',
+            "_compFileMapped('comp-gpa'", "_compFileMapped('comp-moral'", "_compFileMapped('comp-quality'",
+            'id="${id}-file"', 'id="comp-output-dir"', 'name="comp-sports-mode"',
+            'aria-label="${label}文件路径"',
+            "eel.run_module_d", "CloudSync.request('comprehensive-main')",
+            "CloudSync.request('comprehensive-ranking')",
+            "function openComprehensiveOutput(kind)",
+            "openComprehensiveOutput('main')", "openComprehensiveOutput('ranking')",
+        ):
+            self.assertIn(marker, runtime)
+        for selector in (".comp-hero", ".comp-file-card", ".comp-sports-options", ".comp-actionbar"):
+            self.assertIn(selector, css)
+
+    def test_annual_year_is_editable_and_must_be_consecutive(self):
+        annual = ANNUAL.read_text(encoding="utf-8")
+        self.assertIn('学年（可修改）', annual)
+        self.assertIn('id="annual-year"', annual)
+        self.assertIn("Number(yearMatch[2]) !== Number(yearMatch[1]) + 1", annual)
 
 
 if __name__ == "__main__":

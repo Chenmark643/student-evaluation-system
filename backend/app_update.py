@@ -34,11 +34,20 @@ GITHUB_RELEASE_API_URL = (
 )
 GITHUB_WINDOWS_ASSET = "DonCollege-Student-Evaluation-windows-x64.exe"
 CHINA_MIRROR_PREFIX = "https://ghfast.top/"
+CHINA_MIRROR_PREFIXES = (
+    CHINA_MIRROR_PREFIX,
+    "https://ghproxy.net/",
+)
+CHINA_MIRROR_MANIFEST_URLS = tuple(
+    prefix + GITHUB_MANIFEST_URL for prefix in CHINA_MIRROR_PREFIXES
+)
+CHINA_MIRROR_MANIFEST_URL = CHINA_MIRROR_MANIFEST_URLS[0]
 _configured_manifest_urls = (
     os.environ.get("DONCOLLEGE_UPDATE_MANIFEST_URLS")
     or os.environ.get("DONCOLLEGE_UPDATE_MANIFEST_URL")
     or ""
 ).strip()
+_USING_DEFAULT_MANIFEST_URLS = not bool(_configured_manifest_urls)
 UPDATE_MANIFEST_URLS = tuple(
     item.strip() for item in _configured_manifest_urls.split(";") if item.strip()
 ) or (
@@ -53,6 +62,7 @@ ALLOWED_DOWNLOAD_HOSTS = {
     "release-assets.githubusercontent.com",
     "api.github.com",
     "ghfast.top",
+    "ghproxy.net",
 }
 _STATUS_LOCK = threading.Lock()
 _STATUS_CACHE: tuple[float, dict] | None = None
@@ -119,7 +129,7 @@ def _fetch_manifest() -> dict:
     failures = []
     try:
         api_url = _https_url(GITHUB_RELEASE_API_URL, allowed_hosts=ALLOWED_DOWNLOAD_HOSTS)
-        with _open_url(api_url, timeout=15) as response:
+        with _open_url(api_url, timeout=4) as response:
             release = json.loads(response.read(512 * 1024).decode("utf-8-sig"))
         if not isinstance(release, dict):
             raise AppUpdateError("GitHub 发布信息格式不正确。")
@@ -130,6 +140,32 @@ def _fetch_manifest() -> dict:
         failures.append(type(exc).__name__)
     except (UnicodeDecodeError, json.JSONDecodeError, AppUpdateError) as exc:
         failures.append(str(exc))
+
+    if _USING_DEFAULT_MANIFEST_URLS:
+        mirrored = []
+        for candidate in CHINA_MIRROR_MANIFEST_URLS:
+            try:
+                url = _https_url(candidate, allowed_hosts=ALLOWED_DOWNLOAD_HOSTS)
+                with _open_url(url, timeout=10) as response:
+                    raw = response.read(256 * 1024)
+                manifest = json.loads(raw.decode("utf-8-sig"))
+                if not isinstance(manifest, dict):
+                    raise AppUpdateError("国内镜像版本清单内容不正确。")
+                mirrored.append(manifest)
+            except urllib.error.HTTPError as exc:
+                failures.append(f"国内镜像 HTTP {exc.code}")
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                failures.append(f"国内镜像 {type(exc).__name__}")
+            except (UnicodeDecodeError, json.JSONDecodeError, AppUpdateError) as exc:
+                failures.append(str(exc))
+        if len(mirrored) == len(CHINA_MIRROR_MANIFEST_URLS):
+            canonical = {
+                json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                for item in mirrored
+            }
+            if len(canonical) == 1:
+                return mirrored[0]
+            failures.append("两个国内镜像的版本清单不一致")
 
     for candidate in UPDATE_MANIFEST_URLS:
         url = _https_url(candidate)
@@ -160,12 +196,10 @@ def _validated_manifest(manifest: dict) -> dict:
     original_url = _https_url(
         str(manifest.get("url") or ""), allowed_hosts=ALLOWED_DOWNLOAD_HOSTS
     )
-    urls = (
-        _https_url(
-            CHINA_MIRROR_PREFIX + original_url, allowed_hosts=ALLOWED_DOWNLOAD_HOSTS
-        ),
-        original_url,
-    )
+    urls = tuple(
+        _https_url(prefix + original_url, allowed_hosts=ALLOWED_DOWNLOAD_HOSTS)
+        for prefix in CHINA_MIRROR_PREFIXES
+    ) + (original_url,)
     sha256 = str(manifest.get("sha256") or "").lower().strip()
     if not re.fullmatch(r"[0-9a-f]{64}", sha256):
         raise AppUpdateError("最新发布缺少有效的 SHA-256 校验值。")
@@ -452,6 +486,41 @@ def _wait_for_windows_pid(pid: int, timeout_seconds: int = 180) -> bool:
         return False
 
 
+def _atomic_replace_windows_file(target: Path, replacement: Path, backup: Path) -> None:
+    """Atomically replace *target* while preserving its old bytes in *backup*."""
+    if os.name != "nt":
+        os.replace(target, backup)
+        try:
+            os.replace(replacement, target)
+        except OSError:
+            os.replace(backup, target)
+            raise
+        return
+
+    import ctypes
+
+    replace_file = ctypes.WinDLL("kernel32", use_last_error=True).ReplaceFileW
+    replace_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    replace_file.restype = ctypes.c_int
+    if not replace_file(
+        str(target),
+        str(replacement),
+        str(backup),
+        0,
+        None,
+        None,
+    ):
+        error_code = ctypes.get_last_error()
+        raise OSError(error_code, "Windows 原子替换主程序失败", str(target))
+
+
 def run_windows_update_helper(argv: list[str] | None = None) -> int | None:
     """Run replacement mode inside the downloaded new executable.
 
@@ -503,12 +572,11 @@ def run_windows_update_helper(argv: list[str] | None = None) -> int | None:
                 stale.unlink()
             except FileNotFoundError:
                 pass
-        os.replace(target, backup)
-        target_backed_up = True
         shutil.copy2(source, pending)
         if _sha256(pending).lower() != expected_digest:
             raise AppUpdateError("新版程序复制后校验失败。")
-        os.replace(pending, target)
+        _atomic_replace_windows_file(target, pending, backup)
+        target_backed_up = True
 
         child_env = dict(os.environ)
         child_env["DONCOLLEGE_UPDATE_HEALTH_MARKER"] = str(health)
@@ -541,7 +609,6 @@ def run_windows_update_helper(argv: list[str] | None = None) -> int | None:
             pass
         if target_backed_up and backup.is_file():
             try:
-                target.unlink(missing_ok=True)
                 os.replace(backup, target)
                 rollback_env = dict(os.environ)
                 rollback_env.pop("DONCOLLEGE_UPDATE_HEALTH_MARKER", None)

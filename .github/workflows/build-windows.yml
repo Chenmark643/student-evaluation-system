@@ -6,14 +6,19 @@ on:
       version:
         description: "发布版本号（必须与 config.py 一致）"
         required: true
-        default: "14.1.1"
+        default: "14.1.2"
       publish:
         description: "构建完成后发布为最新 Release"
         required: true
         type: boolean
         default: true
   push:
+    branches: ["release-v*"]
     tags: ["v*"]
+
+concurrency:
+  group: student-evaluation-windows-release
+  cancel-in-progress: false
 
 jobs:
   build-windows:
@@ -46,6 +51,11 @@ jobs:
             if ($tagVersion -ne $configVersion) {
               throw "标签版本 $tagVersion 与 config.py $configVersion 不一致"
             }
+          } elseif ("${{ github.ref_type }}" -eq "branch" -and "${{ github.ref_name }}" -like "release-v*") {
+            $branchVersion = "${{ github.ref_name }}".Substring("release-v".Length)
+            if ($branchVersion -ne $configVersion) {
+              throw "发布分支版本 $branchVersion 与 config.py $configVersion 不一致"
+            }
           } elseif ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $inputVersion = "${{ inputs.version }}".TrimStart("v")
             if ($inputVersion -ne $configVersion) {
@@ -76,6 +86,7 @@ jobs:
           node --check web/js/main.js
           node --check web/js/modules/counselor.js
           node --check web/js/modules/annual.js
+          node --check web/js/modules/comprehensive.js
 
       - name: 构建单文件程序
         run: |
@@ -112,7 +123,7 @@ jobs:
             url = "https://github.com/${{ github.repository }}/releases/download/v$env:RELEASE_VERSION/$asset"
             sha256 = $hash
             size = $file.Length
-            notes = "程序在线更新、云表格组件自动升级，以及本版本的功能改进与问题修复。"
+            notes = "修复学年入口，更新综合测评页面；学年导出严格限制当前专业，并保留顿河信241等完整班级名。"
             published_at = (Get-Date).ToUniversalTime().ToString("o")
           }
           $manifest | ConvertTo-Json | Set-Content "dist/update-windows.json" -Encoding utf8
@@ -129,14 +140,30 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      - name: 校验发布标签不可变
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release-v') || inputs.publish
+        shell: pwsh
+        run: |
+          $tag = "v$env:RELEASE_VERSION"
+          $existing = @(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
+          if ($existing.Count -gt 0) {
+            $peeled = $existing | Where-Object { $_ -match '\^\{\}$' } | Select-Object -First 1
+            $selected = if ($peeled) { $peeled } else { $existing[0] }
+            $tagSha = ($selected -split "\s+")[0]
+            if ($tagSha -ne "${{ github.sha }}") {
+              throw "标签 $tag 已指向 $tagSha，拒绝用当前提交覆盖同版本资产"
+            }
+          }
+
       - name: 发布到 GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        if: startsWith(github.ref, 'refs/tags/v') || startsWith(github.ref, 'refs/heads/release-v') || inputs.publish
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.RELEASE_VERSION }}
           target_commitish: ${{ github.sha }}
           name: v${{ env.RELEASE_VERSION }}
           make_latest: true
+          overwrite_files: true
           files: |
             dist/DonCollege-Student-Evaluation-windows-x64.exe
             dist/DonCollege-Student-Evaluation-windows-x64.exe.sha256

@@ -119,3 +119,22 @@ def filter_students_by_program(students: list, program: str) -> list:
         if class_matches_program(class_name, program):
             result.append(student)
     return result
+
+
+def filter_students_by_exact_program(students: list, program: str) -> list:
+    """Filter students by the exact parsed program name.
+
+    This is intended for export boundaries where tolerant substring matching
+    could accidentally include a neighbouring program with a similar name.
+    """
+    wanted = normalize_program_name(program)
+    if not wanted:
+        return list(students)
+    result = []
+    for student in students:
+        class_name = student.get('class_name', student.get('班级',
+                     student.get('学生行政班级', student.get('行政班级', ''))))
+        parsed = normalize_program_name(parse_class_name(class_name).get('program', ''))
+        if parsed == wanted:
+            result.append(student)
+    return result

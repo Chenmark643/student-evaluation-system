@@ -1,9 +1,11 @@
 import io
+import hashlib
 import json
 import os
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,12 +61,57 @@ class AppUpdateTests(unittest.TestCase):
         ), patch.object(
             app_update,
             "_open_url",
-            side_effect=[urllib.error.URLError("blocked"), io.BytesIO(raw)],
+            side_effect=[
+                urllib.error.URLError("blocked"),
+                io.BytesIO(raw),
+                io.BytesIO(raw),
+            ],
         ):
             manifest = app_update._fetch_manifest()
 
         validated = app_update._validated_manifest(manifest)
         self.assertTrue(validated["download_urls"][0].startswith(app_update.CHINA_MIRROR_PREFIX))
+
+    def test_update_works_when_all_direct_github_hosts_are_blocked(self):
+        payload = b"MZ" + (b"x" * (5 * 1024 * 1024))
+        manifest = self.manifest(
+            size=len(payload), sha256=hashlib.sha256(payload).hexdigest()
+        )
+        raw_manifest = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+        opened_urls = []
+
+        def open_url(url, **_kwargs):
+            opened_urls.append(url)
+            host = urllib.parse.urlparse(url).hostname
+            if host in {"api.github.com", "github.com"}:
+                raise urllib.error.URLError("blocked in mainland China")
+            if url in app_update.CHINA_MIRROR_MANIFEST_URLS:
+                return io.BytesIO(raw_manifest)
+            if url.startswith(app_update.CHINA_MIRROR_PREFIX) and url.endswith("app.exe"):
+                return io.BytesIO(payload)
+            raise AssertionError(f"unexpected URL: {url}")
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(app_update, "_STATUS_CACHE", None), \
+                patch.object(app_update, "UPDATE_DIR", Path(tmp) / "updates"), \
+                patch.object(
+                    app_update,
+                    "UPDATE_MANIFEST_URLS",
+                    (app_update.GITHUB_MANIFEST_URL,),
+                ), \
+                patch.object(app_update, "_open_url", side_effect=open_url):
+            status = app_update.get_app_update_status(force=True)
+            downloaded = app_update.download_app_update()
+
+        self.assertTrue(status["success"])
+        self.assertTrue(status["update_available"])
+        self.assertTrue(downloaded["success"])
+        self.assertEqual(downloaded["sha256"], manifest["sha256"])
+        self.assertIn(app_update.GITHUB_RELEASE_API_URL, opened_urls)
+        for mirror_url in app_update.CHINA_MIRROR_MANIFEST_URLS:
+            self.assertIn(mirror_url, opened_urls)
+        self.assertTrue(any(url.endswith("app.exe") and url.startswith(app_update.CHINA_MIRROR_PREFIX)
+                            for url in opened_urls))
 
     def test_status_compares_release_version_semantically(self):
         with patch.object(app_update, "_STATUS_CACHE", None), \
@@ -78,8 +125,6 @@ class AppUpdateTests(unittest.TestCase):
 
     def test_download_verifies_size_digest_and_pe_header(self):
         payload = b"MZ" + (b"x" * (5 * 1024 * 1024))
-        import hashlib
-
         manifest = self.manifest(
             size=len(payload),
             sha256=hashlib.sha256(payload).hexdigest(),
@@ -103,7 +148,7 @@ class AppUpdateTests(unittest.TestCase):
                 patch.object(
                     app_update,
                     "_open_url",
-                    side_effect=[io.BytesIO(payload), io.BytesIO(payload)],
+                    side_effect=lambda *_args, **_kwargs: io.BytesIO(payload),
                 ):
             result = app_update.download_app_update()
 

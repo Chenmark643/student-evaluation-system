@@ -6,7 +6,7 @@
  * Developer: 陈雨昂 · 顿河学院团委秘书处
  */
 
-const APP_VERSION = '14.1.0';
+const APP_VERSION = '14.1.2';
 let currentModule = 'gpa';
 let inWorkspace = false;
 let kdocsComponentStatus = null;
@@ -614,9 +614,9 @@ function switchModule(moduleName) {
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.module === moduleName);
     });
-    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', toolbox:'荣誉资格核验台', cloud:'学院云协作', settings: '系统设置' };
+    const titles = { gpa: '学分绩点计算', moral: '德育分计算', quality: '素质拓展分计算', comprehensive: '综合测评计算', annual:'学年排名汇总', toolbox:'荣誉资格核验台', cloud:'学院云协作', settings: '系统设置' };
     document.getElementById('module-title').textContent = titles[moduleName] || moduleName;
-    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace, settings: renderSettings };
+    const renderers = { gpa: renderModuleGPA, moral: renderModuleMoral, quality: renderModuleQuality, comprehensive: renderModuleComprehensive, annual:renderModuleAnnual, toolbox:renderModuleToolbox, cloud: renderCloudWorkspace, settings: renderSettings };
     const container = document.getElementById('module-container');
     if (renderers[moduleName]) {
         // Always re-render to get fresh DOM + event handlers, then restore data

@@ -825,12 +825,13 @@ def run_module_d(gpa_path: str, moral_path: str,
 # ============================================================
 @eel.expose
 def run_annual_gpa(semester1_path: str, semester2_path: str,
-                   output_dir: str, academic_year: str = '') -> dict:
+                   output_dir: str, academic_year: str = '',
+                   major_filter: str = '') -> dict:
     """Build annual class and program GPA rankings from two semesters."""
     try:
         return process_annual_gpa(
             semester1_path, semester2_path, output_dir,
-            academic_year=academic_year,
+            academic_year=academic_year, major_filter=major_filter,
         )
     except Exception as exc:
         return {'success': False, 'error': str(exc)}
@@ -838,12 +839,13 @@ def run_annual_gpa(semester1_path: str, semester2_path: str,
 
 @eel.expose
 def run_annual_comprehensive(semester1_path: str, semester2_path: str,
-                             output_dir: str, academic_year: str = '') -> dict:
+                             output_dir: str, academic_year: str = '',
+                             major_filter: str = '') -> dict:
     """Build annual class and program comprehensive rankings."""
     try:
         return process_annual_comprehensive(
             semester1_path, semester2_path, output_dir,
-            academic_year=academic_year,
+            academic_year=academic_year, major_filter=major_filter,
         )
     except Exception as exc:
         return {'success': False, 'error': str(exc)}
